@@ -1,42 +1,44 @@
 shader_type spatial;
 render_mode cull_back, depth_draw_opaque, diffuse_burley, specular_schlick_ggx;
 
-uniform sampler2D atlas_texture : source_color;
+uniform sampler2D atlas_texture : source_color, filter_nearest, repeat_disable;
 uniform vec3 albedo_tint : source_color = vec3(1.0);
-uniform float shininess : hint_range(1.0, 256.0) = 64.0;
+uniform vec3 grass_tint : source_color = vec3(0.35, 0.70, 0.25);
+uniform float biome_variation_strength : hint_range(0.0, 1.0) = 0.15;
+uniform float biome_variation_scale : hint_range(0.0, 2.0) = 0.06;
+uniform float atlas_rows : hint_range(1.0, 8.0) = 2.0;
+
+varying vec3 world_pos;
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
 
 void fragment() {
 	// 纹理图集采样：UV 由网格生成算法按“面”分配到对应的图集格子上
 	vec4 tex = texture(atlas_texture, UV);
-	ALBEDO = tex.rgb * albedo_tint;
+
+	float grass_top_mask = clamp(COLOR.r, 0.0, 1.0);
+	float grass_side_overlay_mask = clamp(COLOR.g, 0.0, 1.0);
+	float roughness = clamp(COLOR.b, 0.0, 1.0);
+	float specular = clamp(COLOR.a, 0.0, 1.0);
+	float n = fract(sin(dot(world_pos.xz * biome_variation_scale, vec2(12.9898, 78.233))) * 43758.5453);
+	float biome = mix(1.0, 0.85 + 0.30 * n, biome_variation_strength);
+	vec3 tint = grass_tint * biome;
+
+	vec3 base_rgb = tex.rgb * albedo_tint;
+	vec3 top_rgb = tex.rgb * mix(vec3(1.0), tint, grass_top_mask) * albedo_tint;
+
+	float dv = 1.0 / max(atlas_rows, 1.0);
+	vec2 overlay_uv = UV + vec2(0.0, dv);
+	vec4 overlay = texture(atlas_texture, overlay_uv);
+	vec3 overlay_rgb = overlay.rgb * tint * albedo_tint;
+
+	vec3 side_rgb = base_rgb * (1.0 - overlay.a * grass_side_overlay_mask) + overlay_rgb * (overlay.a * grass_side_overlay_mask);
+	ALBEDO = mix(side_rgb, top_rgb, grass_top_mask);
 	ALPHA = tex.a;
-}
 
-void light() {
-	// --- INDEPENDENT DESIGN START ---
-	// Blinn-Phong 光照模型（每盏灯逐像素计算）
-	// 说明：
-	// - N：表面法线（已在网格生成时为每个面写入常量法线）
-	// - L：从片元指向光源方向
-	// - V：从片元指向相机方向
-	// - H：半程向量（Blinn）
-	vec3 N = normalize(NORMAL);
-	vec3 L = normalize(LIGHT);
-	vec3 V = normalize(VIEW);
-
-	float NdotL = max(dot(N, L), 0.0);
-
-	vec3 H = normalize(L + V);
-	float NdotH = max(dot(N, H), 0.0);
-
-	// 漫反射：Lambert
-	vec3 diffuse = ALBEDO * LIGHT_COLOR.rgb * NdotL;
-
-	// 镜面反射：Blinn-Phong（shininess 控制高光锐利程度）
-	float spec = pow(NdotH, shininess) * step(0.0, NdotL);
-	vec3 specular = LIGHT_COLOR.rgb * spec;
-
-	DIFFUSE_LIGHT += diffuse;
-	SPECULAR_LIGHT += specular;
-	// --- INDEPENDENT DESIGN END ---
+	METALLIC = 0.0;
+	ROUGHNESS = roughness;
+	SPECULAR = specular;
 }

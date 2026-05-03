@@ -3,7 +3,7 @@ class_name VoxelWorld
 
 @export var chunk_size: int = 16
 @export var atlas_columns: int = 4
-@export var atlas_rows: int = 4
+@export var atlas_rows: int = 2
 @export var voxel_scale: float = 1.0
 @export var atlas_texture: Texture2D
 @export var max_interact_distance: float = 6.0
@@ -14,8 +14,11 @@ var _material: ShaderMaterial
 func _ready() -> void:
 	_material = ShaderMaterial.new()
 	_material.shader = preload("res://shaders/voxel_lit.gdshader")
+	if atlas_texture == null:
+		atlas_texture = _build_default_atlas_texture()
 	if atlas_texture != null:
 		_material.set_shader_parameter("atlas_texture", atlas_texture)
+		_material.set_shader_parameter("atlas_rows", atlas_rows * 1.0)
 
 	_create_chunk(Vector3i.ZERO, true)
 
@@ -92,8 +95,8 @@ func _voxel_to_chunk_coord(global_voxel: Vector3i) -> Vector3i:
 	)
 
 func _floor_div(a: int, b: int) -> int:
-	# floori(float) 可正确处理负数下取整
-	return floori(float(a) / float(b))
+	# floori 可正确处理负数下取整；这里用 / 保持浮点除法，避免使用 float(...) 转换
+	return floori(a / (b * 1.0))
 
 func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> Dictionary:
 	# --- INDEPENDENT DESIGN START ---
@@ -124,9 +127,9 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 	if absf(dir.z) > 0.000001:
 		t_delta_z = absf(1.0 / dir.z)
 
-	var next_x: float = float(voxel.x + (1 if step_x > 0 else 0))
-	var next_y: float = float(voxel.y + (1 if step_y > 0 else 0))
-	var next_z: float = float(voxel.z + (1 if step_z > 0 else 0))
+	var next_x: float = (voxel.x + (1 if step_x > 0 else 0)) * 1.0
+	var next_y: float = (voxel.y + (1 if step_y > 0 else 0)) * 1.0
+	var next_z: float = (voxel.z + (1 if step_z > 0 else 0)) * 1.0
 
 	var t_max_x: float = INF
 	var t_max_y: float = INF
@@ -186,6 +189,45 @@ func _sign_int_from_float(v: float) -> int:
 	if v < 0.0:
 		return -1
 	return 0
+
+func _build_default_atlas_texture() -> Texture2D:
+	var top_img: Image = _get_image_from_texture("res://resources/textures/grass_block_top.png")
+	var side_img: Image = _get_image_from_texture("res://resources/textures/grass_block_side.png")
+	var side_overlay_img: Image = _get_image_from_texture("res://resources/textures/grass_block_side_overlay.png")
+	var dirt_img: Image = _get_image_from_texture("res://resources/textures/dirt.png")
+	var stone_img: Image = _get_image_from_texture("res://resources/textures/stone.png")
+
+	if top_img == null or side_img == null or dirt_img == null or stone_img == null:
+		return null
+
+	var tile_w: int = top_img.get_width()
+	var tile_h: int = top_img.get_height()
+
+	if tile_w <= 0 or tile_h <= 0:
+		return null
+
+	var atlas: Image = Image.create(tile_w * 4, tile_h * 2, false, Image.FORMAT_RGBA8)
+
+	# 第 0 行：基础纹理（顶/侧/泥土/石头）
+	atlas.blit_rect(top_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 0, tile_h * 0))
+	atlas.blit_rect(side_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 1, tile_h * 0))
+	atlas.blit_rect(dirt_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 2, tile_h * 0))
+	atlas.blit_rect(stone_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 3, tile_h * 0))
+
+	# 第 1 行：覆盖层纹理（仅 grass side overlay；其余格子保持透明）
+	if side_overlay_img != null:
+		atlas.blit_rect(side_overlay_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 1, tile_h * 1))
+
+	return ImageTexture.create_from_image(atlas)
+
+func _get_image_from_texture(path: String) -> Image:
+	var tex: Texture2D = load(path)
+	if tex == null:
+		return null
+	var img: Image = tex.get_image()
+	if img == null:
+		return null
+	return img
 
 func break_voxel_at_ray(origin: Vector3, direction: Vector3) -> bool:
 	var result: Dictionary = raycast_voxel(origin, direction, max_interact_distance)

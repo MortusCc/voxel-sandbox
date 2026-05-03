@@ -3,7 +3,7 @@ class_name VoxelChunk
 
 @export var chunk_size: int = 16
 @export var atlas_columns: int = 4
-@export var atlas_rows: int = 4
+@export var atlas_rows: int = 2
 @export var uv_padding_pixels: float = 1.0
 @export var voxel_scale: float = 1.0
 
@@ -16,7 +16,7 @@ func _ready() -> void:
 
 func setup(new_chunk_coord: Vector3i) -> void:
 	chunk_coord = new_chunk_coord
-	position = Vector3(chunk_coord) * float(chunk_size) * voxel_scale
+	position = Vector3(chunk_coord) * (chunk_size * 1.0) * voxel_scale
 	_ensure_voxel_buffer()
 
 func _ensure_voxel_buffer() -> void:
@@ -69,6 +69,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 	var vertices: PackedVector3Array = PackedVector3Array()
 	var normals: PackedVector3Array = PackedVector3Array()
 	var uvs: PackedVector2Array = PackedVector2Array()
+	var colors: PackedColorArray = PackedColorArray()
 	var indices: PackedInt32Array = PackedInt32Array()
 
 	var base_vertex_index: int = 0
@@ -104,6 +105,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					colors,
 					indices,
 					base_vertex_index
 				)
@@ -121,6 +123,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					colors,
 					indices,
 					base_vertex_index
 				)
@@ -129,15 +132,16 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					voxel_type,
 					global_voxel,
 					Vector3i(0, 1, 0),
+					Vector3(0, 1, 0),
 					Vector3(0, 1, 1),
 					Vector3(1, 1, 1),
 					Vector3(1, 1, 0),
-					Vector3(0, 1, 0),
 					s,
 					sample_neighbor,
 					vertices,
 					normals,
 					uvs,
+					colors,
 					indices,
 					base_vertex_index
 				)
@@ -155,6 +159,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					colors,
 					indices,
 					base_vertex_index
 				)
@@ -164,14 +169,15 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					global_voxel,
 					Vector3i(0, 0, 1),
 					Vector3(1, 0, 1),
-					Vector3(0, 0, 1),
-					Vector3(0, 1, 1),
 					Vector3(1, 1, 1),
+					Vector3(0, 1, 1),
+					Vector3(0, 0, 1),
 					s,
 					sample_neighbor,
 					vertices,
 					normals,
 					uvs,
+					colors,
 					indices,
 					base_vertex_index
 				)
@@ -181,14 +187,15 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					global_voxel,
 					Vector3i(0, 0, -1),
 					Vector3(0, 0, 0),
-					Vector3(1, 0, 0),
-					Vector3(1, 1, 0),
 					Vector3(0, 1, 0),
+					Vector3(1, 1, 0),
+					Vector3(1, 0, 0),
 					s,
 					sample_neighbor,
 					vertices,
 					normals,
 					uvs,
+					colors,
 					indices,
 					base_vertex_index
 				)
@@ -199,6 +206,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = indices
 
 	var arr_mesh: ArrayMesh = ArrayMesh.new()
@@ -220,6 +228,7 @@ func _try_add_face(
 	vertices: PackedVector3Array,
 	normals: PackedVector3Array,
 	uvs: PackedVector2Array,
+	colors: PackedColorArray,
 	indices: PackedInt32Array,
 	base_vertex_index: int
 ) -> int:
@@ -237,23 +246,58 @@ func _try_add_face(
 	# 2) 再把 tile 坐标转换为 [0,1] 的 UV 区间
 	# 3) 为该面 4 个顶点填充对应 UV
 	var tile: Vector2i = VoxelTypes.get_face_tile(voxel_type, face)
-	var face_uvs: Array[Vector2] = _tile_uvs(tile)
+	var tile_uv_rect: Rect2 = _tile_uv_rect(tile)
 	# --- INDEPENDENT DESIGN END ---
 
 	var start: int = base_vertex_index
 
-	vertices.push_back(local_origin + v0 * s)
-	vertices.push_back(local_origin + v1 * s)
-	vertices.push_back(local_origin + v2 * s)
-	vertices.push_back(local_origin + v3 * s)
+	var corners: Array[Vector3] = [v0, v1, v2, v3]
+	var positions: Array[Vector3] = []
+	var face_uvs: Array[Vector2] = []
+	positions.resize(4)
+	face_uvs.resize(4)
+
+	for i in range(4):
+		positions[i] = local_origin + corners[i] * s
+		var uv_local: Vector2 = _face_uv_local(face, corners[i])
+		face_uvs[i] = tile_uv_rect.position + Vector2(tile_uv_rect.size.x * uv_local.x, tile_uv_rect.size.y * uv_local.y)
+
+	# 绕序统一（配合 cull_back）：将每个面的三角形统一为“顺时针正面”
+	# 判定方法：以 (0,1,2) 三角形的叉乘法线与期望面法线的点积判断。
+	# - 若点积 > 0：当前顶点绕序为 CCW（右手系下叉乘指向 face_normal）
+	# - 本项目选择使用 CW 作为正面，因此需要翻转绕序
+	var tri_n: Vector3 = (positions[1] - positions[0]).cross(positions[2] - positions[0])
+	if tri_n.dot(face_normal) > 0.0:
+		var tmp_p: Vector3 = positions[1]
+		positions[1] = positions[3]
+		positions[3] = tmp_p
+		var tmp_uv: Vector2 = face_uvs[1]
+		face_uvs[1] = face_uvs[3]
+		face_uvs[3] = tmp_uv
+
+	vertices.push_back(positions[0])
+	vertices.push_back(positions[1])
+	vertices.push_back(positions[2])
+	vertices.push_back(positions[3])
 
 	for i in range(4):
 		normals.push_back(face_normal)
 
-	uvs.push_back(face_uvs[0])
-	uvs.push_back(face_uvs[1])
-	uvs.push_back(face_uvs[2])
-	uvs.push_back(face_uvs[3])
+	for i in range(4):
+		uvs.push_back(face_uvs[i])
+
+	var grass_top_mask: float = 1.0 if (voxel_type == VoxelTypes.VoxelType.GRASS and face == VoxelTypes.Face.POS_Y) else 0.0
+	var grass_side_mask: float = 1.0 if (voxel_type == VoxelTypes.VoxelType.GRASS and (face == VoxelTypes.Face.POS_X or face == VoxelTypes.Face.NEG_X or face == VoxelTypes.Face.POS_Z or face == VoxelTypes.Face.NEG_Z)) else 0.0
+	var material_params: Vector2 = _get_material_params(voxel_type, face)
+	var roughness: float = material_params.x
+	var specular: float = material_params.y
+	for i in range(4):
+		# 顶点色在本项目中仅作为“掩码数据”使用，不参与传统意义的顶点颜色渲染：
+		# - COLOR.r：草顶面染色掩码（1 表示该面需要乘以 grass_tint）
+		# - COLOR.g：草侧面覆盖层掩码（1 表示该面需要额外叠加 grass_block_side_overlay 的染色）
+		# - COLOR.b：粗糙度 roughness（0 光滑 - 1 粗糙）
+		# - COLOR.a：镜面强度 specular（0 无高光 - 1 高光强）
+		colors.push_back(Color(grass_top_mask, grass_side_mask, roughness, specular))
 
 	# Godot 的三角形正面默认使用顺时针顶点绕序
 	# 参考：ArrayMesh/MeshDataTool 文档中的说明
@@ -284,8 +328,8 @@ func _face_normal(face: int) -> Vector3:
 			return Vector3.UP
 
 func _tile_uvs(tile: Vector2i) -> Array[Vector2]:
-	var cols: float = max(1.0, float(atlas_columns))
-	var rows: float = max(1.0, float(atlas_rows))
+	var cols: float = max(1.0, atlas_columns * 1.0)
+	var rows: float = max(1.0, atlas_rows * 1.0)
 
 	var du: float = 1.0 / cols
 	var dv: float = 1.0 / rows
@@ -294,10 +338,10 @@ func _tile_uvs(tile: Vector2i) -> Array[Vector2]:
 	var pad_u: float = (uv_padding_pixels / cols) * 0.001
 	var pad_v: float = (uv_padding_pixels / rows) * 0.001
 
-	var u0: float = float(tile.x) * du + pad_u
-	var v0: float = float(tile.y) * dv + pad_v
-	var u1: float = float(tile.x + 1) * du - pad_u
-	var v1: float = float(tile.y + 1) * dv - pad_v
+	var u0: float = (tile.x * 1.0) * du + pad_u
+	var v0: float = (tile.y * 1.0) * dv + pad_v
+	var u1: float = ((tile.x + 1) * 1.0) * du - pad_u
+	var v1: float = ((tile.y + 1) * 1.0) * dv - pad_v
 
 	# Godot 纹理 UV 的 (0,0) 在左上角，因此 v 越大越靠下
 	# 这里的 4 个 UV 对应 _try_add_face 传入的 4 个顶点顺序
@@ -307,3 +351,55 @@ func _tile_uvs(tile: Vector2i) -> Array[Vector2]:
 		Vector2(u1, v0),
 		Vector2(u0, v0),
 	]
+
+func _tile_uv_rect(tile: Vector2i) -> Rect2:
+	var cols: float = max(1.0, atlas_columns * 1.0)
+	var rows: float = max(1.0, atlas_rows * 1.0)
+
+	var du: float = 1.0 / cols
+	var dv: float = 1.0 / rows
+
+	var pad_u: float = (uv_padding_pixels / cols) * 0.001
+	var pad_v: float = (uv_padding_pixels / rows) * 0.001
+
+	var u0: float = (tile.x * 1.0) * du + pad_u
+	var v0: float = (tile.y * 1.0) * dv + pad_v
+	var u1: float = ((tile.x + 1) * 1.0) * du - pad_u
+	var v1: float = ((tile.y + 1) * 1.0) * dv - pad_v
+
+	return Rect2(Vector2(u0, v0), Vector2(u1 - u0, v1 - v0))
+
+func _face_uv_local(face: int, corner: Vector3) -> Vector2:
+	# 约定：uv_local 的 (0,0) 为 tile 左上角，(1,1) 为 tile 右下角
+	# 侧面：v 与世界 y 对齐，确保 grass_block_side 的“草皮部分”永远朝上
+	match face:
+		VoxelTypes.Face.POS_X:
+			return Vector2(1.0 - corner.z, 1.0 - corner.y)
+		VoxelTypes.Face.NEG_X:
+			return Vector2(corner.z, 1.0 - corner.y)
+		VoxelTypes.Face.POS_Z:
+			return Vector2(corner.x, 1.0 - corner.y)
+		VoxelTypes.Face.NEG_Z:
+			return Vector2(1.0 - corner.x, 1.0 - corner.y)
+		VoxelTypes.Face.POS_Y:
+			return Vector2(corner.x, corner.z)
+		VoxelTypes.Face.NEG_Y:
+			return Vector2(corner.x, 1.0 - corner.z)
+		_:
+			return Vector2.ZERO
+
+func _get_material_params(voxel_type: int, face: int) -> Vector2:
+	# 返回 (roughness, specular)
+	match voxel_type:
+		VoxelTypes.VoxelType.GRASS:
+			if face == VoxelTypes.Face.POS_Y:
+				return Vector2(0.95, 0.08)
+			if face == VoxelTypes.Face.NEG_Y:
+				return Vector2(1.00, 0.04)
+			return Vector2(0.92, 0.10)
+		VoxelTypes.VoxelType.DIRT:
+			return Vector2(1.00, 0.04)
+		VoxelTypes.VoxelType.STONE:
+			return Vector2(0.88, 0.12)
+		_:
+			return Vector2(0.95, 0.08)
