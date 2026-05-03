@@ -13,6 +13,18 @@ config_version=5
 config/name="VoxelSandbox"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
+run/main_scene="res://scenes/main.tscn"
+
+[input]
+
+break_block={
+"deadzone": 0.5,
+"events": [Object(InputEventMouseButton,"resource_local_to_scene":false,"device":-1,"button_index":1,"pressed":true,"canceled":false,"double_click":false,"position":Vector2(0, 0),"global_position":Vector2(0, 0),"factor":1.0)]
+}
+place_block={
+"deadzone": 0.5,
+"events": [Object(InputEventMouseButton,"resource_local_to_scene":false,"device":-1,"button_index":2,"pressed":true,"canceled":false,"double_click":false,"position":Vector2(0, 0),"global_position":Vector2(0, 0),"factor":1.0)]
+}
 
 [dotnet]
 
