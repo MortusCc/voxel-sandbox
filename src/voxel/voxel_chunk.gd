@@ -1,18 +1,34 @@
 extends MeshInstance3D
 class_name VoxelChunk
 
+const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
+
 @export var chunk_size: int = 16
 @export var atlas_columns: int = 4
 @export var atlas_rows: int = 2
-@export var uv_padding_pixels: float = 1.0
+@export var tile_pixels: int = 16
+@export var uv_padding_pixels: float = 0.0
 @export var voxel_scale: float = 1.0
+
+const FACE_CORNERS: Array = [
+	# 每个面的 4 个角点（单位立方体局部坐标）。三角形绕序由后续索引生成逻辑决定。
+	[Vector3(1, 0, 0), Vector3(1, 0, 1), Vector3(1, 1, 1), Vector3(1, 1, 0)], # POS_X (+X)
+	[Vector3(0, 0, 0), Vector3(0, 1, 0), Vector3(0, 1, 1), Vector3(0, 0, 1)], # NEG_X (-X)
+	[Vector3(0, 1, 0), Vector3(1, 1, 0), Vector3(1, 1, 1), Vector3(0, 1, 1)], # POS_Y (+Y)
+	[Vector3(0, 0, 0), Vector3(0, 0, 1), Vector3(1, 0, 1), Vector3(1, 0, 0)], # NEG_Y (-Y)
+	[Vector3(0, 0, 1), Vector3(0, 1, 1), Vector3(1, 1, 1), Vector3(1, 0, 1)], # POS_Z (+Z)
+	[Vector3(0, 0, 0), Vector3(1, 0, 0), Vector3(1, 1, 0), Vector3(0, 1, 0)], # NEG_Z (-Z)
+]
 
 var chunk_coord: Vector3i = Vector3i.ZERO
 
 var _voxels: PackedByteArray = PackedByteArray()
+var _static_body: StaticBody3D
+var _collision_shape: CollisionShape3D
 
 func _ready() -> void:
 	_ensure_voxel_buffer()
+	_ensure_collision_nodes()
 
 func setup(new_chunk_coord: Vector3i) -> void:
 	chunk_coord = new_chunk_coord
@@ -86,20 +102,21 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 		for y in range(chunk_size):
 			for x in range(chunk_size):
 				var voxel_type: int = get_voxel_local(x, y, z)
-				if not VoxelTypes.is_solid(voxel_type):
+				if not BlockRegistryScript.is_solid(voxel_type):
 					continue
 
 				var global_voxel: Vector3i = chunk_coord * chunk_size + Vector3i(x, y, z)
 
+				var cx: Array = FACE_CORNERS[VoxelTypes.Face.POS_X]
 				base_vertex_index = _try_add_face(
 					VoxelTypes.Face.POS_X,
 					voxel_type,
 					global_voxel,
 					Vector3i(1, 0, 0),
-					Vector3(1, 0, 0),
-					Vector3(1, 1, 0),
-					Vector3(1, 1, 1),
-					Vector3(1, 0, 1),
+					cx[0],
+					cx[1],
+					cx[2],
+					cx[3],
 					s,
 					sample_neighbor,
 					vertices,
@@ -109,15 +126,16 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					indices,
 					base_vertex_index
 				)
+				var cnx: Array = FACE_CORNERS[VoxelTypes.Face.NEG_X]
 				base_vertex_index = _try_add_face(
 					VoxelTypes.Face.NEG_X,
 					voxel_type,
 					global_voxel,
 					Vector3i(-1, 0, 0),
-					Vector3(0, 0, 1),
-					Vector3(0, 1, 1),
-					Vector3(0, 1, 0),
-					Vector3(0, 0, 0),
+					cnx[0],
+					cnx[1],
+					cnx[2],
+					cnx[3],
 					s,
 					sample_neighbor,
 					vertices,
@@ -127,15 +145,16 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					indices,
 					base_vertex_index
 				)
+				var cy: Array = FACE_CORNERS[VoxelTypes.Face.POS_Y]
 				base_vertex_index = _try_add_face(
 					VoxelTypes.Face.POS_Y,
 					voxel_type,
 					global_voxel,
 					Vector3i(0, 1, 0),
-					Vector3(0, 1, 0),
-					Vector3(0, 1, 1),
-					Vector3(1, 1, 1),
-					Vector3(1, 1, 0),
+					cy[0],
+					cy[1],
+					cy[2],
+					cy[3],
 					s,
 					sample_neighbor,
 					vertices,
@@ -145,15 +164,16 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					indices,
 					base_vertex_index
 				)
+				var cny: Array = FACE_CORNERS[VoxelTypes.Face.NEG_Y]
 				base_vertex_index = _try_add_face(
 					VoxelTypes.Face.NEG_Y,
 					voxel_type,
 					global_voxel,
 					Vector3i(0, -1, 0),
-					Vector3(0, 0, 0),
-					Vector3(1, 0, 0),
-					Vector3(1, 0, 1),
-					Vector3(0, 0, 1),
+					cny[0],
+					cny[1],
+					cny[2],
+					cny[3],
 					s,
 					sample_neighbor,
 					vertices,
@@ -163,15 +183,16 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					indices,
 					base_vertex_index
 				)
+				var cz: Array = FACE_CORNERS[VoxelTypes.Face.POS_Z]
 				base_vertex_index = _try_add_face(
 					VoxelTypes.Face.POS_Z,
 					voxel_type,
 					global_voxel,
 					Vector3i(0, 0, 1),
-					Vector3(1, 0, 1),
-					Vector3(1, 1, 1),
-					Vector3(0, 1, 1),
-					Vector3(0, 0, 1),
+					cz[0],
+					cz[1],
+					cz[2],
+					cz[3],
 					s,
 					sample_neighbor,
 					vertices,
@@ -181,15 +202,16 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					indices,
 					base_vertex_index
 				)
+				var cnz: Array = FACE_CORNERS[VoxelTypes.Face.NEG_Z]
 				base_vertex_index = _try_add_face(
 					VoxelTypes.Face.NEG_Z,
 					voxel_type,
 					global_voxel,
 					Vector3i(0, 0, -1),
-					Vector3(0, 0, 0),
-					Vector3(0, 1, 0),
-					Vector3(1, 1, 0),
-					Vector3(1, 0, 0),
+					cnz[0],
+					cnz[1],
+					cnz[2],
+					cnz[3],
 					s,
 					sample_neighbor,
 					vertices,
@@ -213,6 +235,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 	if vertices.size() > 0:
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh = arr_mesh
+	_update_collision_from_mesh()
 
 func _try_add_face(
 	face: int,
@@ -234,7 +257,7 @@ func _try_add_face(
 ) -> int:
 	var neighbor_global: Vector3i = global_voxel + neighbor_offset
 	var neighbor_type: int = sample_neighbor.call(neighbor_global)
-	if VoxelTypes.is_solid(neighbor_type):
+	if BlockRegistryScript.is_solid(neighbor_type):
 		return base_vertex_index
 
 	var local_origin: Vector3 = Vector3(global_voxel - chunk_coord * chunk_size) * s
@@ -245,7 +268,10 @@ func _try_add_face(
 	# 1) 根据 voxel_type 与 face，查到其在图集中的 tile 坐标（整格索引）
 	# 2) 再把 tile 坐标转换为 [0,1] 的 UV 区间
 	# 3) 为该面 4 个顶点填充对应 UV
-	var tile: Vector2i = VoxelTypes.get_face_tile(voxel_type, face)
+	var block: Resource = BlockRegistryScript.get_block(voxel_type)
+	var tile: Vector2i = Vector2i.ZERO
+	if block != null:
+		tile = block.call("tile_for_face", face)
 	var tile_uv_rect: Rect2 = _tile_uv_rect(tile)
 	# --- INDEPENDENT DESIGN END ---
 
@@ -262,19 +288,6 @@ func _try_add_face(
 		var uv_local: Vector2 = _face_uv_local(face, corners[i])
 		face_uvs[i] = tile_uv_rect.position + Vector2(tile_uv_rect.size.x * uv_local.x, tile_uv_rect.size.y * uv_local.y)
 
-	# 绕序统一（配合 cull_back）：将每个面的三角形统一为“顺时针正面”
-	# 判定方法：以 (0,1,2) 三角形的叉乘法线与期望面法线的点积判断。
-	# - 若点积 > 0：当前顶点绕序为 CCW（右手系下叉乘指向 face_normal）
-	# - 本项目选择使用 CW 作为正面，因此需要翻转绕序
-	var tri_n: Vector3 = (positions[1] - positions[0]).cross(positions[2] - positions[0])
-	if tri_n.dot(face_normal) > 0.0:
-		var tmp_p: Vector3 = positions[1]
-		positions[1] = positions[3]
-		positions[3] = tmp_p
-		var tmp_uv: Vector2 = face_uvs[1]
-		face_uvs[1] = face_uvs[3]
-		face_uvs[3] = tmp_uv
-
 	vertices.push_back(positions[0])
 	vertices.push_back(positions[1])
 	vertices.push_back(positions[2])
@@ -288,7 +301,9 @@ func _try_add_face(
 
 	var grass_top_mask: float = 1.0 if (voxel_type == VoxelTypes.VoxelType.GRASS and face == VoxelTypes.Face.POS_Y) else 0.0
 	var grass_side_mask: float = 1.0 if (voxel_type == VoxelTypes.VoxelType.GRASS and (face == VoxelTypes.Face.POS_X or face == VoxelTypes.Face.NEG_X or face == VoxelTypes.Face.POS_Z or face == VoxelTypes.Face.NEG_Z)) else 0.0
-	var material_params: Vector2 = _get_material_params(voxel_type, face)
+	var material_params: Vector2 = Vector2(0.95, 0.08)
+	if block != null:
+		material_params = block.call("material_params_for_face", face)
 	var roughness: float = material_params.x
 	var specular: float = material_params.y
 	for i in range(4):
@@ -299,8 +314,6 @@ func _try_add_face(
 		# - COLOR.a：镜面强度 specular（0 无高光 - 1 高光强）
 		colors.push_back(Color(grass_top_mask, grass_side_mask, roughness, specular))
 
-	# Godot 的三角形正面默认使用顺时针顶点绕序
-	# 参考：ArrayMesh/MeshDataTool 文档中的说明
 	indices.push_back(start + 0)
 	indices.push_back(start + 1)
 	indices.push_back(start + 2)
@@ -353,21 +366,20 @@ func _tile_uvs(tile: Vector2i) -> Array[Vector2]:
 	]
 
 func _tile_uv_rect(tile: Vector2i) -> Rect2:
-	var cols: float = max(1.0, atlas_columns * 1.0)
-	var rows: float = max(1.0, atlas_rows * 1.0)
+	var cols: int = max(1, atlas_columns)
+	var rows: int = max(1, atlas_rows)
+	var tp: float = max(1.0, tile_pixels * 1.0)
+	var pad_px: float = clampf(uv_padding_pixels, 0.0, tp * 0.49)
 
-	var du: float = 1.0 / cols
-	var dv: float = 1.0 / rows
+	var atlas_w: float = float(cols) * tp
+	var atlas_h: float = float(rows) * tp
 
-	var pad_u: float = (uv_padding_pixels / cols) * 0.001
-	var pad_v: float = (uv_padding_pixels / rows) * 0.001
+	var left: float = (float(tile.x) * tp + pad_px) / atlas_w
+	var right: float = (float(tile.x + 1) * tp - pad_px) / atlas_w
+	var top: float = (float(tile.y) * tp + pad_px) / atlas_h
+	var bottom: float = (float(tile.y + 1) * tp - pad_px) / atlas_h
 
-	var u0: float = (tile.x * 1.0) * du + pad_u
-	var v0: float = (tile.y * 1.0) * dv + pad_v
-	var u1: float = ((tile.x + 1) * 1.0) * du - pad_u
-	var v1: float = ((tile.y + 1) * 1.0) * dv - pad_v
-
-	return Rect2(Vector2(u0, v0), Vector2(u1 - u0, v1 - v0))
+	return Rect2(Vector2(left, top), Vector2(right - left, bottom - top))
 
 func _face_uv_local(face: int, corner: Vector3) -> Vector2:
 	# 约定：uv_local 的 (0,0) 为 tile 左上角，(1,1) 为 tile 右下角
@@ -388,18 +400,30 @@ func _face_uv_local(face: int, corner: Vector3) -> Vector2:
 		_:
 			return Vector2.ZERO
 
-func _get_material_params(voxel_type: int, face: int) -> Vector2:
-	# 返回 (roughness, specular)
-	match voxel_type:
-		VoxelTypes.VoxelType.GRASS:
-			if face == VoxelTypes.Face.POS_Y:
-				return Vector2(0.95, 0.08)
-			if face == VoxelTypes.Face.NEG_Y:
-				return Vector2(1.00, 0.04)
-			return Vector2(0.92, 0.10)
-		VoxelTypes.VoxelType.DIRT:
-			return Vector2(1.00, 0.04)
-		VoxelTypes.VoxelType.STONE:
-			return Vector2(0.88, 0.12)
-		_:
-			return Vector2(0.95, 0.08)
+func _ensure_collision_nodes() -> void:
+	if _static_body == null:
+		_static_body = StaticBody3D.new()
+		_static_body.name = "StaticBody3D"
+		add_child(_static_body)
+
+	if _collision_shape == null:
+		_collision_shape = CollisionShape3D.new()
+		_collision_shape.name = "CollisionShape3D"
+		_static_body.add_child(_collision_shape)
+
+func _update_collision_from_mesh() -> void:
+	_ensure_collision_nodes()
+
+	if mesh == null:
+		_collision_shape.shape = null
+		_static_body.collision_layer = 0
+		_static_body.collision_mask = 0
+		return
+
+	var shape: Shape3D = mesh.create_trimesh_shape()
+	if shape is ConcavePolygonShape3D:
+		(shape as ConcavePolygonShape3D).backface_collision = true
+	_collision_shape.shape = shape
+	_static_body.collision_layer = 1
+	_static_body.collision_mask = 2
+

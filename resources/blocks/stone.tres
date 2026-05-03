@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="BlockData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/voxel/block_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://resources/textures/stone.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = 3
+display_name = "石头"
+solid = true
+icon_texture = ExtResource("2")
+tile_top = Vector2i(3, 0)
+tile_side = Vector2i(3, 0)
+tile_bottom = Vector2i(3, 0)
+roughness_top = 0.88
+roughness_side = 0.88
+roughness_bottom = 0.88
+specular_top = 0.12
+specular_side = 0.12
+specular_bottom = 0.12

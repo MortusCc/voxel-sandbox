@@ -76,4 +76,4 @@ func _try_place_block() -> void:
 	var origin: Vector3 = global_position
 	var dir: Vector3 = -global_transform.basis.z
 	if world.has_method("place_voxel_at_ray"):
-		world.call("place_voxel_at_ray", origin, dir, VoxelTypes.default_place_type())
+		world.call("place_voxel_at_ray", origin, dir, VoxelTypes.VoxelType.DIRT)

@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="BlockData" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/voxel/block_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://resources/textures/dirt.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = 2
+display_name = "泥土"
+solid = true
+icon_texture = ExtResource("2")
+tile_top = Vector2i(2, 0)
+tile_side = Vector2i(2, 0)
+tile_bottom = Vector2i(2, 0)
+roughness_top = 1.0
+roughness_side = 1.0
+roughness_bottom = 1.0
+specular_top = 0.04
+specular_side = 0.04
+specular_bottom = 0.04
