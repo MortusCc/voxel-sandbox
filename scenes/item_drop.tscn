@@ -16,6 +16,4 @@ collision_mask = 1
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
 shape = SubResource("SphereShape3D_1")
 
-[node name="Sprite3D" type="Sprite3D" parent="."]
-pixel_size = 0.01
-shaded = false
+[node name="BlockMesh" type="MeshInstance3D" parent="."]

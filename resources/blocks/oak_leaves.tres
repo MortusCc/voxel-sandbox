@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="BlockData" format=3]
+
+[ext_resource type="Script" uid="uid://dngoppel6k84e" path="res://src/voxel/block_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://resources/textures/block/oak_leaves.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = 5
+display_name = "橡木树叶"
+solid = true
+occludes_faces = false
+tint_mode = 2
+use_side_overlay = false
+alpha_cutoff = 0.5
+icon_texture = ExtResource("2")
+tile_top = Vector2i(0, 0)
+tile_side = Vector2i(0, 0)
+tile_bottom = Vector2i(0, 0)
+roughness_top = 0.95
+roughness_side = 0.95
+roughness_bottom = 0.95
+specular_top = 0.04
+specular_side = 0.04
+specular_bottom = 0.04

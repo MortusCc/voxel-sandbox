@@ -352,6 +352,10 @@ func _init_hotbar() -> void:
 	_hotbar_counts[1] = 32
 	_hotbar_item_ids[2] = VoxelTypes.VoxelType.STONE
 	_hotbar_counts[2] = 32
+	_hotbar_item_ids[3] = 4
+	_hotbar_counts[3] = 32
+	_hotbar_item_ids[4] = 5
+	_hotbar_counts[4] = 32
 
 	_refresh_hotbar_ui()
 

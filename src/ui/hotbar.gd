@@ -6,6 +6,13 @@ const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 
 var _selected_style: StyleBoxFlat
 var _unselected_style: StyleBoxFlat
+var _preview_renderer: Node
+var _preview_connected: bool = false
+var _last_stacks: Array = []
+var _last_selected_index: int = 0
+
+## 图标内边距占格子尺寸的比例（越大图标越小）
+@export var icon_padding_ratio: float = 0.12
 
 
 func _ready() -> void:
@@ -57,7 +64,8 @@ func set_items(items: Array[int], selected_index: int) -> void:
 
 		var icon: TextureRect = slot.get_node_or_null("Icon") as TextureRect
 		if icon != null:
-			icon.texture = BlockRegistryScript.icon_for(items[i])
+			_apply_icon_layout(slot, icon)
+			icon.texture = _get_item_icon_texture(items[i])
 
 		var selected: bool = i == selected_index
 		slot.color = Color(0.12, 0.12, 0.12, 0.65) if selected else Color(0.05, 0.05, 0.05, 0.5)
@@ -71,6 +79,8 @@ func set_items(items: Array[int], selected_index: int) -> void:
 
 func set_stacks(stacks: Array, selected_index: int) -> void:
 	# stacks[i] 期望包含：{ "item_id": int, "count": int }
+	_last_stacks = stacks
+	_last_selected_index = selected_index
 	_ensure_initialized()
 	if _slots == null:
 		return
@@ -90,7 +100,8 @@ func set_stacks(stacks: Array, selected_index: int) -> void:
 
 		var icon: TextureRect = slot.get_node_or_null("Icon") as TextureRect
 		if icon != null:
-			icon.texture = BlockRegistryScript.icon_for(item_id)
+			_apply_icon_layout(slot, icon)
+			icon.texture = _get_item_icon_texture(item_id)
 
 		var selected: bool = i == selected_index
 		slot.color = Color(0.12, 0.12, 0.12, 0.65) if selected else Color(0.05, 0.05, 0.05, 0.5)
@@ -126,3 +137,44 @@ func _set_slot_count_text(slot: Control, count: int) -> void:
 		label.text = str(count)
 	else:
 		label.text = ""
+
+
+func _get_item_icon_texture(item_id: int) -> Texture2D:
+	# 说明：优先使用“实时 3D 渲染的方块预览图”；若尚未渲染完成，则回退到原有 icon_texture，保证 UI 不空白。
+	var r: Node = _get_preview_renderer()
+	if r != null and r.has_method("request_preview"):
+		var t: Texture2D = r.call("request_preview", item_id)
+		if t != null:
+			return t
+	return BlockRegistryScript.icon_for(item_id)
+
+
+func _apply_icon_layout(slot: Control, icon: TextureRect) -> void:
+	var s: Vector2 = slot.size
+	var pad: float = floorf(min(s.x, s.y) * clampf(icon_padding_ratio, 0.0, 0.45))
+	icon.offset_left = pad
+	icon.offset_top = pad
+	icon.offset_right = -pad
+	icon.offset_bottom = -pad
+
+
+func _get_preview_renderer() -> Node:
+	if _preview_renderer != null and is_instance_valid(_preview_renderer):
+		return _preview_renderer
+	var root: Node = get_tree().current_scene
+	if root != null:
+		_preview_renderer = root.get_node_or_null("HUD/BlockPreviewRenderer")
+	if _preview_renderer != null and not _preview_connected:
+		if _preview_renderer.has_signal("preview_ready"):
+			_preview_renderer.connect("preview_ready", Callable(self, "_on_preview_ready"))
+			_preview_connected = true
+		if _preview_renderer.has_method("clear_cache"):
+			_preview_renderer.call("clear_cache")
+	return _preview_renderer
+
+
+func _on_preview_ready(_block_id: int, _texture: Texture2D) -> void:
+	# 说明：某个方块预览生成后，重新刷新一次 UI，让已缓存的 Texture 立刻替换掉回退图标。
+	if _last_stacks.is_empty():
+		return
+	set_stacks(_last_stacks, _last_selected_index)

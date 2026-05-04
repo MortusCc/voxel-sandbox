@@ -3,6 +3,7 @@ class_name VoxelWorld
 
 const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 const ItemDropScene: PackedScene = preload("res://scenes/item_drop.tscn")
+const AtlasBuilderScript := preload("res://src/voxel/atlas_builder.gd")
 
 @export var chunk_size: int = 16
 @export var atlas_columns: int = 4
@@ -315,60 +316,18 @@ func _sign_int_from_float(v: float) -> int:
 	return 0
 
 func _build_default_atlas_texture() -> Texture2D:
-	var top_img: Image = _get_image_from_texture("res://resources/textures/block/grass_block_top.png")
-	var side_img: Image = _get_image_from_texture("res://resources/textures/block/grass_block_side.png")
-	var side_overlay_img: Image = _get_image_from_texture("res://resources/textures/block/grass_block_side_overlay.png")
-	var dirt_img: Image = _get_image_from_texture("res://resources/textures/block/dirt.png")
-	var stone_img: Image = _get_image_from_texture("res://resources/textures/block/stone.png")
-
-	if top_img == null or side_img == null or dirt_img == null or stone_img == null:
+	var result: Dictionary = AtlasBuilderScript.build_block_atlas("res://resources/textures/block")
+	if result.is_empty():
 		return null
 
-	var tile_w: int = top_img.get_width()
-	var tile_h: int = top_img.get_height()
+	atlas_columns = max(1, str(result.get("columns", 1)).to_int())
+	atlas_rows = max(1, str(result.get("rows", 2)).to_int())
+	_tile_pixels = max(1, str(result.get("tile_pixels", 16)).to_int())
 
-	if tile_w <= 0 or tile_h <= 0:
-		return null
+	var mapping: Dictionary = result.get("mapping", {})
+	BlockRegistry.apply_atlas_mapping(mapping)
 
-	_tile_pixels = tile_w
-
-	top_img = _normalize_tile_image(top_img, tile_w, tile_h)
-	side_img = _normalize_tile_image(side_img, tile_w, tile_h)
-	dirt_img = _normalize_tile_image(dirt_img, tile_w, tile_h)
-	stone_img = _normalize_tile_image(stone_img, tile_w, tile_h)
-	if side_overlay_img != null:
-		side_overlay_img = _normalize_tile_image(side_overlay_img, tile_w, tile_h)
-
-	var atlas: Image = Image.create(tile_w * 4, tile_h * 2, false, Image.FORMAT_RGBA8)
-
-	# 第 0 行：基础纹理（顶/侧/泥土/石头）
-	atlas.blit_rect(top_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 0, tile_h * 0))
-	atlas.blit_rect(side_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 1, tile_h * 0))
-	atlas.blit_rect(dirt_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 2, tile_h * 0))
-	atlas.blit_rect(stone_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 3, tile_h * 0))
-
-	# 第 1 行：覆盖层纹理（仅 grass side overlay；其余格子保持透明）
-	if side_overlay_img != null:
-		atlas.blit_rect(side_overlay_img, Rect2i(0, 0, tile_w, tile_h), Vector2i(tile_w * 1, tile_h * 1))
-
-	return ImageTexture.create_from_image(atlas)
-
-func _get_image_from_texture(path: String) -> Image:
-	var tex: Texture2D = load(path)
-	if tex == null:
-		return null
-	var img: Image = tex.get_image()
-	if img == null:
-		return null
-	return img
-
-func _normalize_tile_image(img: Image, tile_w: int, tile_h: int) -> Image:
-	var out: Image = img.duplicate()
-	if out.get_format() != Image.FORMAT_RGBA8:
-		out.convert(Image.FORMAT_RGBA8)
-	if out.get_width() != tile_w or out.get_height() != tile_h:
-		out.resize(tile_w, tile_h, Image.INTERPOLATE_NEAREST)
-	return out
+	return result.get("texture", null)
 
 func break_voxel_at_ray(origin: Vector3, direction: Vector3) -> bool:
 	var result: Dictionary = raycast_voxel(origin, direction, max_interact_distance)

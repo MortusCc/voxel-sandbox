@@ -85,6 +85,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 	var vertices: PackedVector3Array = PackedVector3Array()
 	var normals: PackedVector3Array = PackedVector3Array()
 	var uvs: PackedVector2Array = PackedVector2Array()
+	var uv2s: PackedVector2Array = PackedVector2Array()
 	var colors: PackedColorArray = PackedColorArray()
 	var indices: PackedInt32Array = PackedInt32Array()
 
@@ -122,6 +123,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					uv2s,
 					colors,
 					indices,
 					base_vertex_index
@@ -141,6 +143,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					uv2s,
 					colors,
 					indices,
 					base_vertex_index
@@ -160,6 +163,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					uv2s,
 					colors,
 					indices,
 					base_vertex_index
@@ -179,6 +183,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					uv2s,
 					colors,
 					indices,
 					base_vertex_index
@@ -198,6 +203,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					uv2s,
 					colors,
 					indices,
 					base_vertex_index
@@ -217,6 +223,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					vertices,
 					normals,
 					uvs,
+					uv2s,
 					colors,
 					indices,
 					base_vertex_index
@@ -228,6 +235,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_TEX_UV2] = uv2s
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = indices
 
@@ -251,13 +259,14 @@ func _try_add_face(
 	vertices: PackedVector3Array,
 	normals: PackedVector3Array,
 	uvs: PackedVector2Array,
+	uv2s: PackedVector2Array,
 	colors: PackedColorArray,
 	indices: PackedInt32Array,
 	base_vertex_index: int
 ) -> int:
 	var neighbor_global: Vector3i = global_voxel + neighbor_offset
 	var neighbor_type: int = sample_neighbor.call(neighbor_global)
-	if BlockRegistryScript.is_solid(neighbor_type):
+	if BlockRegistryScript.occludes_faces(neighbor_type):
 		return base_vertex_index
 
 	var local_origin: Vector3 = Vector3(global_voxel - chunk_coord * chunk_size) * s
@@ -299,13 +308,33 @@ func _try_add_face(
 	for i in range(4):
 		uvs.push_back(face_uvs[i])
 
-	var grass_top_mask: float = 1.0 if (voxel_type == VoxelTypes.VoxelType.GRASS and face == VoxelTypes.Face.POS_Y) else 0.0
-	var grass_side_mask: float = 1.0 if (voxel_type == VoxelTypes.VoxelType.GRASS and (face == VoxelTypes.Face.POS_X or face == VoxelTypes.Face.NEG_X or face == VoxelTypes.Face.POS_Z or face == VoxelTypes.Face.NEG_Z)) else 0.0
 	var material_params: Vector2 = Vector2(0.95, 0.08)
 	if block != null:
 		material_params = block.call("material_params_for_face", face)
 	var roughness: float = material_params.x
 	var specular: float = material_params.y
+
+	var tint_mode: int = 0
+	var use_side_overlay: bool = false
+	var alpha_cutoff: float = 0.0
+	if block != null:
+		tint_mode = str(block.get("tint_mode")).to_int()
+		use_side_overlay = bool(block.get("use_side_overlay"))
+		alpha_cutoff = str(block.get("alpha_cutoff")).to_float()
+
+	var leaf_mask: float = 1.0 if tint_mode == 2 else 0.0
+	for i in range(4):
+		uv2s.push_back(Vector2(leaf_mask, alpha_cutoff))
+
+	var grass_top_mask: float = 0.0
+	if tint_mode == 1 and face == VoxelTypes.Face.POS_Y:
+		grass_top_mask = 1.0
+	elif tint_mode == 2:
+		grass_top_mask = 1.0
+
+	var grass_side_mask: float = 0.0
+	if use_side_overlay and (face == VoxelTypes.Face.POS_X or face == VoxelTypes.Face.NEG_X or face == VoxelTypes.Face.POS_Z or face == VoxelTypes.Face.NEG_Z):
+		grass_side_mask = 1.0
 	for i in range(4):
 		# 顶点色在本项目中仅作为“掩码数据”使用，不参与传统意义的顶点颜色渲染：
 		# - COLOR.r：草顶面染色掩码（1 表示该面需要乘以 grass_tint）

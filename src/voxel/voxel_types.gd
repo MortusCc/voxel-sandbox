@@ -6,6 +6,8 @@ enum VoxelType {
 	GRASS = 1,
 	DIRT = 2,
 	STONE = 3,
+	OAK_LOG = 4,
+	OAK_LEAVES = 5,
 }
 
 enum Face {

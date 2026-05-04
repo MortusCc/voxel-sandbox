@@ -3,6 +3,7 @@
 [ext_resource type="Script" uid="uid://dam58copplf8a" path="res://src/voxel/voxel_world.gd" id="1"]
 [ext_resource type="Script" uid="uid://b7i8dljgyiw1n" path="res://src/player/player_controller.gd" id="2"]
 [ext_resource type="PackedScene" path="res://scenes/hotbar.tscn" id="3"]
+[ext_resource type="Script" path="res://src/ui/block_preview_renderer.gd" id="4"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -83,3 +84,6 @@ mouse_filter = 2
 [node name="Hotbar" parent="HUD" unique_id=698591752 instance=ExtResource("3")]
 layout_mode = 3
 anchors_preset = 7
+
+[node name="BlockPreviewRenderer" type="Node" parent="HUD"]
+script = ExtResource("4")
