@@ -50,6 +50,8 @@ func _ready() -> void:
 	# - 落地后做轻微上下悬浮抖动，并持续旋转（接近 MC 方块掉落表现）。
 	# - 玩家进入吸附范围后，掉落物会从原地飞向玩家，接近后触发拾取。
 	_refresh_visual()
+	if _mesh != null:
+		_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_base_mesh_y = _mesh.position.y if _mesh != null else 0.0
 	_attract_delay_left = max(0.0, attract_delay)
 	velocity = Vector3(randf() - 0.5, 1.8, randf() - 0.5) * 1.2
@@ -217,12 +219,6 @@ func _add_face(
 		tile = block.call("tile_for_face", face)
 	var r: Rect2 = _tile_uv_rect(tile)
 
-	var material_params: Vector2 = Vector2(1.0, 0.0)
-	if block != null and block.has_method("material_params_for_face"):
-		material_params = block.call("material_params_for_face", face)
-	var roughness: float = material_params.x
-	var specular: float = material_params.y
-
 	var tint_mode: int = 0
 	var use_side_overlay: bool = false
 	var alpha_cutoff: float = 0.0
@@ -231,7 +227,9 @@ func _add_face(
 		use_side_overlay = bool(block.get("use_side_overlay"))
 		alpha_cutoff = str(block.get("alpha_cutoff")).to_float()
 
-	var leaf_mask: float = 1.0 if tint_mode == 2 else 0.0
+	var leaf_flag: float = 1.0 if tint_mode == 2 else 0.0
+	var biome_id: float = 0.0
+	var uv2_x: float = leaf_flag * 0.5 + (biome_id + 0.5) * (1.0 / 8.0)
 
 	var grass_top_mask: float = 0.0
 	if tint_mode == 1 and face == VoxelTypes.Face.POS_Y:
@@ -248,8 +246,8 @@ func _add_face(
 		normals.push_back(normal)
 		var uv_local: Vector2 = _face_uv_local(face, corners[i])
 		uvs.push_back(r.position + Vector2(r.size.x * uv_local.x, r.size.y * uv_local.y))
-		uv2s.push_back(Vector2(leaf_mask, alpha_cutoff))
-		colors.push_back(Color(grass_top_mask, grass_side_mask, roughness, specular))
+		uv2s.push_back(Vector2(uv2_x, alpha_cutoff))
+		colors.push_back(Color(grass_top_mask, grass_side_mask, 1.0, 0.0))
 
 	indices.push_back(base + 0)
 	indices.push_back(base + 1)

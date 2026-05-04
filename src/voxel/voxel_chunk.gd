@@ -9,6 +9,11 @@ const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 @export var tile_pixels: int = 16
 @export var uv_padding_pixels: float = 0.0
 @export var voxel_scale: float = 1.0
+@export var collision_enabled: bool = true
+## 群系随机种子（用于草色/叶色与树生成的一致性）
+@export var biome_seed: int = 1337
+## 群系分布尺度（越大群系边界越碎，越小群系块越大）
+@export_range(0.0001, 0.2, 0.0001) var biome_map_scale: float = 0.02
 
 const FACE_CORNERS: Array = [
 	# 每个面的 4 个角点（单位立方体局部坐标）。三角形绕序由后续索引生成逻辑决定。
@@ -27,6 +32,7 @@ var _static_body: StaticBody3D
 var _collision_shape: CollisionShape3D
 
 func _ready() -> void:
+	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_ensure_voxel_buffer()
 	_ensure_collision_nodes()
 
@@ -79,7 +85,7 @@ func fill_test_terrain() -> void:
 				else:
 					set_voxel_local(x, y, z, VoxelTypes.VoxelType.AIR)
 
-func rebuild_mesh(sample_neighbor: Callable) -> void:
+func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	# sample_neighbor: (global_voxel_pos: Vector3i) -> int，用于跨 Chunk 查询相邻体素
 	_ensure_voxel_buffer()
 	var vertices: PackedVector3Array = PackedVector3Array()
@@ -120,6 +126,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					cx[3],
 					s,
 					sample_neighbor,
+					sample_skylight,
 					vertices,
 					normals,
 					uvs,
@@ -140,6 +147,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					cnx[3],
 					s,
 					sample_neighbor,
+					sample_skylight,
 					vertices,
 					normals,
 					uvs,
@@ -160,6 +168,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					cy[3],
 					s,
 					sample_neighbor,
+					sample_skylight,
 					vertices,
 					normals,
 					uvs,
@@ -180,6 +189,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					cny[3],
 					s,
 					sample_neighbor,
+					sample_skylight,
 					vertices,
 					normals,
 					uvs,
@@ -200,6 +210,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					cz[3],
 					s,
 					sample_neighbor,
+					sample_skylight,
 					vertices,
 					normals,
 					uvs,
@@ -220,6 +231,7 @@ func rebuild_mesh(sample_neighbor: Callable) -> void:
 					cnz[3],
 					s,
 					sample_neighbor,
+					sample_skylight,
 					vertices,
 					normals,
 					uvs,
@@ -256,6 +268,7 @@ func _try_add_face(
 	v3: Vector3,
 	s: float,
 	sample_neighbor: Callable,
+	sample_skylight: Callable,
 	vertices: PackedVector3Array,
 	normals: PackedVector3Array,
 	uvs: PackedVector2Array,
@@ -268,6 +281,12 @@ func _try_add_face(
 	var neighbor_type: int = sample_neighbor.call(neighbor_global)
 	if BlockRegistryScript.occludes_faces(neighbor_type):
 		return base_vertex_index
+
+	var light_level: int = 15
+	if not sample_skylight.is_null():
+		light_level = int(sample_skylight.call(neighbor_global))
+	var sky_light01: float = clampf(light_level * (1.0 / 15.0), 0.0, 1.0)
+	var block_light01: float = 0.0
 
 	var local_origin: Vector3 = Vector3(global_voxel - chunk_coord * chunk_size) * s
 	var face_normal: Vector3 = _face_normal(face)
@@ -308,12 +327,6 @@ func _try_add_face(
 	for i in range(4):
 		uvs.push_back(face_uvs[i])
 
-	var material_params: Vector2 = Vector2(0.95, 0.08)
-	if block != null:
-		material_params = block.call("material_params_for_face", face)
-	var roughness: float = material_params.x
-	var specular: float = material_params.y
-
 	var tint_mode: int = 0
 	var use_side_overlay: bool = false
 	var alpha_cutoff: float = 0.0
@@ -322,9 +335,15 @@ func _try_add_face(
 		use_side_overlay = bool(block.get("use_side_overlay"))
 		alpha_cutoff = str(block.get("alpha_cutoff")).to_float()
 
-	var leaf_mask: float = 1.0 if tint_mode == 2 else 0.0
+	var leaf_flag: float = 1.0 if tint_mode == 2 else 0.0
+	# 说明：把“是否树叶(0/1)”与“群系ID(0/1/2)”打包到 UV2.x，确保同一个方块 6 个面颜色一致。
+	# 解码规则在 voxel_lit.gdshader 中：
+	# - leaf_mask = step(0.5, UV2.x)
+	# - biome_id = floor((UV2.x - leaf_mask*0.5) * 8.0)
+	var biome_id: int = _biome_id_at(global_voxel.x, global_voxel.z)
+	var uv2_x: float = leaf_flag * 0.5 + (float(biome_id) + 0.5) * (1.0 / 8.0)
 	for i in range(4):
-		uv2s.push_back(Vector2(leaf_mask, alpha_cutoff))
+		uv2s.push_back(Vector2(uv2_x, alpha_cutoff))
 
 	var grass_top_mask: float = 0.0
 	if tint_mode == 1 and face == VoxelTypes.Face.POS_Y:
@@ -336,12 +355,7 @@ func _try_add_face(
 	if use_side_overlay and (face == VoxelTypes.Face.POS_X or face == VoxelTypes.Face.NEG_X or face == VoxelTypes.Face.POS_Z or face == VoxelTypes.Face.NEG_Z):
 		grass_side_mask = 1.0
 	for i in range(4):
-		# 顶点色在本项目中仅作为“掩码数据”使用，不参与传统意义的顶点颜色渲染：
-		# - COLOR.r：草顶面染色掩码（1 表示该面需要乘以 grass_tint）
-		# - COLOR.g：草侧面覆盖层掩码（1 表示该面需要额外叠加 grass_block_side_overlay 的染色）
-		# - COLOR.b：粗糙度 roughness（0 光滑 - 1 粗糙）
-		# - COLOR.a：镜面强度 specular（0 无高光 - 1 高光强）
-		colors.push_back(Color(grass_top_mask, grass_side_mask, roughness, specular))
+		colors.push_back(Color(grass_top_mask, grass_side_mask, sky_light01, block_light01))
 
 	indices.push_back(start + 0)
 	indices.push_back(start + 1)
@@ -351,6 +365,34 @@ func _try_add_face(
 	indices.push_back(start + 3)
 
 	return base_vertex_index + 4
+
+
+func _fract(v: float) -> float:
+	return v - floor(v)
+
+
+func _hash12(p: Vector2) -> float:
+	return _fract(sin(p.dot(Vector2(127.1, 311.7))) * 43758.5453)
+
+
+func _noise2(p: Vector2) -> float:
+	var i: Vector2 = Vector2(floor(p.x), floor(p.y))
+	var f: Vector2 = Vector2(p.x - i.x, p.y - i.y)
+	var a: float = _hash12(i)
+	var b: float = _hash12(i + Vector2(1.0, 0.0))
+	var c: float = _hash12(i + Vector2(0.0, 1.0))
+	var d: float = _hash12(i + Vector2(1.0, 1.0))
+	var u: Vector2 = f * f * (Vector2.ONE * 3.0 - 2.0 * f)
+	return lerpf(lerpf(a, b, u.x), lerpf(c, d, u.x), u.y)
+
+
+func _biome_id_at(gx: int, gz: int) -> int:
+	# 说明：用连续噪声生成群系，得到 0/1/2（平原/森林/干旱）。
+	# 这里以“世界坐标（米）”采样，确保 voxel_scale 改变时群系视觉尺度仍然符合预期。
+	var wx: float = gx * voxel_scale
+	var wz: float = gz * voxel_scale
+	var n: float = _noise2(Vector2(wx, wz) * biome_map_scale + Vector2(float(biome_seed) * 0.13, float(biome_seed) * -0.37))
+	return floori(clampf(n, 0.0, 0.999) * 3.0)
 
 func _face_normal(face: int) -> Vector3:
 	match face:
@@ -441,6 +483,14 @@ func _ensure_collision_nodes() -> void:
 		_static_body.add_child(_collision_shape)
 
 func _update_collision_from_mesh() -> void:
+	if not collision_enabled:
+		if _collision_shape != null:
+			_collision_shape.shape = null
+		if _static_body != null:
+			_static_body.collision_layer = 0
+			_static_body.collision_mask = 0
+		return
+
 	_ensure_collision_nodes()
 
 	if mesh == null:

@@ -71,6 +71,8 @@ static func build_block_atlas(block_textures_dir: String) -> Dictionary:
 
 
 static func _get_image(path: String) -> Image:
+	if not ResourceLoader.exists(path):
+		return null
 	var tex: Texture2D = load(path)
 	if tex == null:
 		return null
@@ -84,4 +86,3 @@ static func _normalize(img: Image, w: int, h: int) -> Image:
 	if out.get_width() != w or out.get_height() != h:
 		out.resize(w, h, Image.INTERPOLATE_NEAREST)
 	return out
-
