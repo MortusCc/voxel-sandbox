@@ -2,6 +2,7 @@ extends Node3D
 class_name VoxelWorld
 
 const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
+const ItemDropScene: PackedScene = preload("res://scenes/item_drop.tscn")
 
 @export var chunk_size: int = 16
 @export var atlas_columns: int = 4
@@ -314,11 +315,11 @@ func _sign_int_from_float(v: float) -> int:
 	return 0
 
 func _build_default_atlas_texture() -> Texture2D:
-	var top_img: Image = _get_image_from_texture("res://resources/textures/grass_block_top.png")
-	var side_img: Image = _get_image_from_texture("res://resources/textures/grass_block_side.png")
-	var side_overlay_img: Image = _get_image_from_texture("res://resources/textures/grass_block_side_overlay.png")
-	var dirt_img: Image = _get_image_from_texture("res://resources/textures/dirt.png")
-	var stone_img: Image = _get_image_from_texture("res://resources/textures/stone.png")
+	var top_img: Image = _get_image_from_texture("res://resources/textures/block/grass_block_top.png")
+	var side_img: Image = _get_image_from_texture("res://resources/textures/block/grass_block_side.png")
+	var side_overlay_img: Image = _get_image_from_texture("res://resources/textures/block/grass_block_side_overlay.png")
+	var dirt_img: Image = _get_image_from_texture("res://resources/textures/block/dirt.png")
+	var stone_img: Image = _get_image_from_texture("res://resources/textures/block/stone.png")
 
 	if top_img == null or side_img == null or dirt_img == null or stone_img == null:
 		return null
@@ -373,7 +374,9 @@ func break_voxel_at_ray(origin: Vector3, direction: Vector3) -> bool:
 	var result: Dictionary = raycast_voxel(origin, direction, max_interact_distance)
 	if not result.get("hit", false):
 		return false
+	var vt: int = result.get("type", VoxelTypes.VoxelType.AIR)
 	set_voxel_global(result["voxel"], VoxelTypes.VoxelType.AIR)
+	_spawn_item_drop(vt, 1, (Vector3(result["voxel"]) + Vector3(0.5, 0.5, 0.5)) * voxel_scale)
 	return true
 
 func place_voxel_at_ray(origin: Vector3, direction: Vector3, voxel_type: int) -> bool:
@@ -386,3 +389,22 @@ func place_voxel_at_ray(origin: Vector3, direction: Vector3, voxel_type: int) ->
 		return false
 	set_voxel_global(target, voxel_type)
 	return true
+
+func spawn_item_drop(item_id: int, count: int, world_pos: Vector3) -> Node:
+	return _spawn_item_drop(item_id, count, world_pos)
+
+func _spawn_item_drop(item_id: int, count: int, world_pos: Vector3) -> Node:
+	# 说明：只对“实体方块”生成掉落（空气不掉落）。透明/液体等后续可在 BlockData 扩展规则。
+	if not BlockRegistryScript.is_solid(item_id):
+		return null
+	if ItemDropScene == null:
+		return null
+	var drop: Node = ItemDropScene.instantiate()
+	if drop == null:
+		return null
+	drop.set("item_id", item_id)
+	drop.set("count", count)
+	add_child(drop)
+	if drop is Node3D:
+		(drop as Node3D).global_position = world_pos
+	return drop

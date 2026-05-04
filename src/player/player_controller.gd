@@ -1,8 +1,6 @@
 extends CharacterBody3D
 class_name PlayerController
 
-const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
-
 @export var move_speed: float = 6.0
 @export var sprint_multiplier: float = 1.8
 @export var jump_velocity: float = 6.0
@@ -15,6 +13,10 @@ const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 
 @export var max_interact_distance: float = 6.0
 @export var highlight_update_interval: float = 0.05
+
+@export var item_magnet_radius: float = 1.0
+@export var item_magnet_drop_grace_seconds: float = 1.0
+@export var item_magnet_target_height: float = 0.15
 
 @export var fly_speed: float = 6.0
 @export var fly_vertical_speed: float = 6.0
@@ -30,12 +32,15 @@ var _space_held: bool = false
 var _jump_consumed_on_floor: bool = false
 var _was_on_floor: bool = false
 var _highlight_timer: float = 0.0
-var _hotbar_items: Array[int] = []
 var _hotbar_selected_index: int = 0
+var _hotbar_item_ids: PackedInt32Array = PackedInt32Array()
+var _hotbar_counts: PackedInt32Array = PackedInt32Array()
 var _cached_camera: Camera3D
 var _cached_world: Node
+var _item_magnet: Area3D
 
 func _ready() -> void:
+	_ensure_input_actions()
 	_mouse_captured = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	_yaw = rotation.y
@@ -47,7 +52,71 @@ func _ready() -> void:
 		push_error("PlayerController: 找不到 Camera3D，请检查 Player 的 camera_path 或节点结构。")
 	if _cached_world == null:
 		push_error("PlayerController: 找不到 VoxelWorld，请检查 Player 的 voxel_world_path 或节点结构。")
+	_ensure_item_magnet()
 	_init_hotbar()
+
+func _ensure_input_actions() -> void:
+	# 作用：统一把“移动/疾跑/飞行下落”等按键放到 InputMap 里，后续可在 Project Settings 里自由改键。
+	# 说明：只在缺失时补齐，不会覆盖你已经在项目里配置过的输入映射。
+	_ensure_key_action("move_forward", KEY_W)
+	_ensure_key_action("move_back", KEY_S)
+	_ensure_key_action("move_left", KEY_A)
+	_ensure_key_action("move_right", KEY_D)
+	_ensure_key_action("sprint", KEY_SHIFT)
+	_ensure_key_action("fly_down", KEY_CTRL)
+	_ensure_key_action("jump", KEY_SPACE)
+	_ensure_key_action("drop_item", KEY_Q)
+
+func _ensure_key_action(action_name: StringName, keycode: Key) -> void:
+	if not InputMap.has_action(action_name):
+		InputMap.add_action(action_name)
+
+	for ev in InputMap.action_get_events(action_name):
+		if ev is InputEventKey and (ev as InputEventKey).keycode == keycode:
+			return
+
+	var e: InputEventKey = InputEventKey.new()
+	e.keycode = keycode
+	InputMap.action_add_event(action_name, e)
+
+func _ensure_item_magnet() -> void:
+	# 作用：统一由玩家控制“吸附范围”。任何掉落物进入该范围后，开始飞向玩家并拾取。
+	if _item_magnet != null and is_instance_valid(_item_magnet):
+		_update_item_magnet_radius()
+		return
+
+	_item_magnet = Area3D.new()
+	_item_magnet.name = "ItemMagnet"
+	_item_magnet.collision_layer = 0
+	_item_magnet.collision_mask = 4
+	add_child(_item_magnet)
+
+	var cs: CollisionShape3D = CollisionShape3D.new()
+	cs.name = "CollisionShape3D"
+	var s: SphereShape3D = SphereShape3D.new()
+	s.radius = max(0.1, item_magnet_radius)
+	cs.shape = s
+	_item_magnet.add_child(cs)
+
+	_item_magnet.body_entered.connect(_on_item_magnet_body_entered)
+
+func _update_item_magnet_radius() -> void:
+	if _item_magnet == null or not is_instance_valid(_item_magnet):
+		return
+	var cs: CollisionShape3D = _item_magnet.get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if cs == null:
+		return
+	var s: SphereShape3D = cs.shape as SphereShape3D
+	if s == null:
+		return
+	s.radius = max(0.1, item_magnet_radius)
+
+func _on_item_magnet_body_entered(body: Node) -> void:
+	if body == null:
+		return
+	if body.has_method("start_attract"):
+		body.set("attract_target_height", item_magnet_target_height)
+		body.call("start_attract", self)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
@@ -71,6 +140,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_on_space_released()
 
 	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_Q:
+			_try_drop_selected_one()
+
+	if event is InputEventKey and event.pressed and not event.echo:
 		_try_select_hotbar_by_number_key(event.keycode)
 
 	if event is InputEventMouseButton and event.pressed:
@@ -78,34 +151,27 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _physics_process(delta: float) -> void:
 	_handle_interaction_input()
-	var input_dir: Vector3 = Vector3.ZERO
 	var xform_basis: Basis = global_transform.basis
-
-	if Input.is_key_pressed(KEY_W):
-		input_dir += -xform_basis.z
-	if Input.is_key_pressed(KEY_S):
-		input_dir += xform_basis.z
-	if Input.is_key_pressed(KEY_A):
-		input_dir += -xform_basis.x
-	if Input.is_key_pressed(KEY_D):
-		input_dir += xform_basis.x
-
-	input_dir.y = 0.0
+	var move_input: Vector2 = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	# 说明：Input.get_vector 的第三/第四个参数语义是 up/down（上为 -1，下为 +1）。
+	# 在 3D 里，Basis.z 指向“后方”，Basis.-z 指向“前方”。
+	# 因此这里直接用 Basis.z * y：W(上,-1) => -z(前)，S(下,+1) => +z(后)。
+	var input_dir: Vector3 = (xform_basis.x * move_input.x) + (xform_basis.z * move_input.y)
 	if input_dir.length() > 0.0001:
 		input_dir = input_dir.normalized()
 
 	if _fly_mode:
 		var fly_h_speed: float = fly_speed
-		if Input.is_key_pressed(KEY_SHIFT):
+		if Input.is_action_pressed("sprint"):
 			fly_h_speed *= sprint_multiplier
 
 		velocity.x = input_dir.x * fly_h_speed
 		velocity.z = input_dir.z * fly_h_speed
 
 		var v: float = 0.0
-		if Input.is_key_pressed(KEY_SPACE):
+		if Input.is_action_pressed("jump"):
 			v += fly_vertical_speed
-		if Input.is_key_pressed(KEY_CTRL):
+		if Input.is_action_pressed("fly_down"):
 			v -= fly_vertical_speed
 		velocity.y = v
 
@@ -119,7 +185,7 @@ func _physics_process(delta: float) -> void:
 	_was_on_floor = on_floor_before
 
 	var speed: float = move_speed
-	if Input.is_key_pressed(KEY_SHIFT):
+	if Input.is_action_pressed("sprint"):
 		speed *= sprint_multiplier
 
 	velocity.x = input_dir.x * speed
@@ -231,6 +297,10 @@ func _try_place_block() -> void:
 	if world == null or cam == null:
 		return
 
+	var place_type: int = _get_selected_place_type()
+	if place_type == VoxelTypes.VoxelType.AIR:
+		return
+
 	var origin: Vector3 = cam.global_position
 	var dir: Vector3 = -cam.global_transform.basis.z
 	if not world.has_method("raycast_voxel"):
@@ -244,11 +314,10 @@ func _try_place_block() -> void:
 	if _would_place_block_intersect_player(target, world):
 		return
 
-	if world.has_method("set_voxel_global"):
-		var place_type: int = _get_selected_place_type()
-		if place_type == VoxelTypes.VoxelType.AIR:
-			return
-		world.call("set_voxel_global", target, place_type)
+	if world.has_method("place_voxel_at_ray"):
+		var placed: bool = world.call("place_voxel_at_ray", origin, dir, place_type)
+		if placed:
+			_consume_selected_one()
 
 func _on_space_pressed() -> void:
 	_space_press_time_sec = Time.get_ticks_msec() / 1000.0
@@ -269,25 +338,30 @@ func _on_space_released() -> void:
 		_last_space_tap_time_sec = now_sec
 
 func _init_hotbar() -> void:
-	_hotbar_items = [
-		VoxelTypes.VoxelType.DIRT,
-		VoxelTypes.VoxelType.GRASS,
-		VoxelTypes.VoxelType.STONE,
-		VoxelTypes.VoxelType.AIR,
-		VoxelTypes.VoxelType.AIR,
-		VoxelTypes.VoxelType.AIR,
-		VoxelTypes.VoxelType.AIR,
-		VoxelTypes.VoxelType.AIR,
-		VoxelTypes.VoxelType.AIR,
-	]
-	_hotbar_selected_index = clampi(_hotbar_selected_index, 0, _hotbar_items.size() - 1)
+	_hotbar_selected_index = clampi(_hotbar_selected_index, 0, 8)
+	_hotbar_item_ids.resize(9)
+	_hotbar_counts.resize(9)
+	for i in range(9):
+		_hotbar_item_ids[i] = VoxelTypes.VoxelType.AIR
+		_hotbar_counts[i] = 0
+
+	# 说明：初始给三种方块各一组，便于测试拾取/放置/堆叠。
+	_hotbar_item_ids[0] = VoxelTypes.VoxelType.DIRT
+	_hotbar_counts[0] = 32
+	_hotbar_item_ids[1] = VoxelTypes.VoxelType.GRASS
+	_hotbar_counts[1] = 32
+	_hotbar_item_ids[2] = VoxelTypes.VoxelType.STONE
+	_hotbar_counts[2] = 32
+
 	_refresh_hotbar_ui()
 
 func _get_selected_place_type() -> int:
-	if _hotbar_items.is_empty():
+	_hotbar_selected_index = clampi(_hotbar_selected_index, 0, 8)
+	if _hotbar_counts.size() != 9:
 		return VoxelTypes.VoxelType.AIR
-	_hotbar_selected_index = clampi(_hotbar_selected_index, 0, _hotbar_items.size() - 1)
-	return _hotbar_items[_hotbar_selected_index]
+	if _hotbar_counts[_hotbar_selected_index] <= 0:
+		return VoxelTypes.VoxelType.AIR
+	return _hotbar_item_ids[_hotbar_selected_index]
 
 func _try_select_hotbar_by_number_key(keycode: Key) -> void:
 	if keycode < KEY_1 or keycode > KEY_9:
@@ -296,17 +370,13 @@ func _try_select_hotbar_by_number_key(keycode: Key) -> void:
 	_select_hotbar_index(idx)
 
 func _try_select_hotbar_by_wheel(button_index: MouseButton) -> void:
-	if _hotbar_items.is_empty():
-		return
 	if button_index == MOUSE_BUTTON_WHEEL_UP:
-		_select_hotbar_index((_hotbar_selected_index + _hotbar_items.size() - 1) % _hotbar_items.size())
+		_select_hotbar_index((_hotbar_selected_index + 8) % 9)
 	elif button_index == MOUSE_BUTTON_WHEEL_DOWN:
-		_select_hotbar_index((_hotbar_selected_index + 1) % _hotbar_items.size())
+		_select_hotbar_index((_hotbar_selected_index + 1) % 9)
 
 func _select_hotbar_index(index: int) -> void:
-	if _hotbar_items.is_empty():
-		return
-	var clamped: int = clampi(index, 0, _hotbar_items.size() - 1)
+	var clamped: int = clampi(index, 0, 8)
 	if clamped == _hotbar_selected_index:
 		return
 	_hotbar_selected_index = clamped
@@ -316,30 +386,98 @@ func _refresh_hotbar_ui() -> void:
 	var hotbar: Control = _get_hotbar()
 	if hotbar == null:
 		return
-	var slots: Node = hotbar.get_node_or_null("Slots")
-	if slots == null:
+	if _hotbar_item_ids.size() != 9 or _hotbar_counts.size() != 9:
+		return
+	var stacks: Array = []
+	stacks.resize(9)
+	for i in range(9):
+		stacks[i] = {"item_id": _hotbar_item_ids[i], "count": _hotbar_counts[i]}
+	if hotbar.has_method("set_stacks"):
+		hotbar.call("set_stacks", stacks, _hotbar_selected_index)
+	elif hotbar.has_method("set_items"):
+		var items: Array[int] = []
+		items.resize(9)
+		for i in range(9):
+			items[i] = _hotbar_item_ids[i]
+		hotbar.call("set_items", items, _hotbar_selected_index)
+
+func pickup_item(item_id: int, count: int) -> int:
+	# 返回：剩余未拾取数量；0 表示全部进入快捷栏。
+	return _add_to_hotbar(item_id, count)
+
+func _add_to_hotbar(item_id: int, amount: int) -> int:
+	if amount <= 0:
+		return 0
+	if item_id == VoxelTypes.VoxelType.AIR:
+		return amount
+	if _hotbar_item_ids.size() != 9 or _hotbar_counts.size() != 9:
+		return amount
+
+	var remain: int = amount
+	var max_stack: int = 64
+
+	for i in range(9):
+		if remain <= 0:
+			break
+		if _hotbar_item_ids[i] == item_id and _hotbar_counts[i] > 0 and _hotbar_counts[i] < max_stack:
+			var can_add: int = min(remain, max_stack - _hotbar_counts[i])
+			_hotbar_counts[i] += can_add
+			remain -= can_add
+
+	for i in range(9):
+		if remain <= 0:
+			break
+		if _hotbar_counts[i] <= 0 or _hotbar_item_ids[i] == VoxelTypes.VoxelType.AIR:
+			var put: int = min(remain, max_stack)
+			_hotbar_item_ids[i] = item_id
+			_hotbar_counts[i] = put
+			remain -= put
+
+	if remain != amount:
+		_refresh_hotbar_ui()
+	return remain
+
+func _consume_selected_one() -> void:
+	var slot: int = clampi(_hotbar_selected_index, 0, 8)
+	if _hotbar_item_ids.size() != 9 or _hotbar_counts.size() != 9:
+		return
+	if _hotbar_counts[slot] <= 0:
+		return
+	_hotbar_counts[slot] -= 1
+	if _hotbar_counts[slot] <= 0:
+		_hotbar_counts[slot] = 0
+		_hotbar_item_ids[slot] = VoxelTypes.VoxelType.AIR
+	_refresh_hotbar_ui()
+
+func _try_drop_selected_one() -> void:
+	var world: Node = _get_world()
+	var cam: Camera3D = _get_camera()
+	if world == null or cam == null:
+		return
+	if not world.has_method("spawn_item_drop"):
 		return
 
-	for i in range(min(_hotbar_items.size(), slots.get_child_count())):		
-		var slot: ColorRect = slots.get_child(i) as ColorRect
-		if slot == null:
-			continue
-		var icon: TextureRect = slot.get_node_or_null("Icon") as TextureRect
-		if icon != null:
-			icon.texture = BlockRegistryScript.icon_for(_hotbar_items[i])
-		var selected: bool = i == _hotbar_selected_index
-		slot.color = Color(0.12, 0.12, 0.12, 0.65) if selected else Color(0.05, 0.05, 0.05, 0.5)
+	var slot: int = clampi(_hotbar_selected_index, 0, 8)
+	if _hotbar_item_ids.size() != 9 or _hotbar_counts.size() != 9:
+		return
+	var item_id: int = _hotbar_item_ids[slot]
+	if item_id == VoxelTypes.VoxelType.AIR or _hotbar_counts[slot] <= 0:
+		return
+	_hotbar_counts[slot] -= 1
+	if _hotbar_counts[slot] <= 0:
+		_hotbar_counts[slot] = 0
+		_hotbar_item_ids[slot] = VoxelTypes.VoxelType.AIR
+	_refresh_hotbar_ui()
 
-		var border: Panel = slot.get_node_or_null("Border") as Panel
-		if border != null:
-			var sb: StyleBoxFlat = StyleBoxFlat.new()
-			sb.bg_color = Color(0.0, 0.0, 0.0, 0.0)
-			sb.border_width_left = 3
-			sb.border_width_right = 3
-			sb.border_width_top = 3
-			sb.border_width_bottom = 3
-			sb.border_color = Color(1.0, 0.92, 0.25, 1.0) if selected else Color(0.0, 0.0, 0.0, 0.0)
-			border.add_theme_stylebox_override("panel", sb)
+	var forward: Vector3 = -cam.global_transform.basis.z
+	var dist: float = max(1.2, item_magnet_radius + 0.6)
+	var drop_pos: Vector3 = cam.global_position + forward * dist
+	var drop: Variant = world.call("spawn_item_drop", item_id, 1, drop_pos)
+	if typeof(drop) == TYPE_OBJECT and drop != null:
+		if drop.has_method("set_attract_delay"):
+			drop.call("set_attract_delay", item_magnet_drop_grace_seconds)
+		drop.set("attract_target_height", item_magnet_target_height)
+		drop.set("velocity", forward * 6.0 + Vector3.UP * 2.0)
 
 func _would_place_block_intersect_player(target_voxel: Vector3i, world: Node) -> bool:
 	# 规则：不允许把方块放进玩家当前占据的空间（避免把自己“封进方块里”或导致掉落/穿透）。
