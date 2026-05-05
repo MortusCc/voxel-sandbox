@@ -69,6 +69,93 @@ static func build_block_atlas(block_textures_dir: String) -> Dictionary:
 		"mapping": mapping,
 	}
 
+static func build_block_atlas_from_paths(base_paths: Array[String]) -> Dictionary:
+	var paths: Array[String] = base_paths.duplicate()
+	paths.sort()
+	if paths.is_empty():
+		return {}
+
+	var first_img: Image = _get_image(paths[0])
+	if first_img == null:
+		return {}
+
+	var tile_px: int = first_img.get_width()
+	if tile_px <= 0:
+		return {}
+
+	var cols: int = paths.size()
+	var rows: int = 2
+
+	var atlas: Image = Image.create(tile_px * cols, tile_px * rows, false, Image.FORMAT_RGBA8)
+	atlas.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	var mapping: Dictionary = {}
+
+	for i in range(cols):
+		var base_path: String = paths[i]
+		var img: Image = _get_image(base_path)
+		if img == null:
+			continue
+		img = _normalize(img, tile_px, tile_px)
+		atlas.blit_rect(img, Rect2i(0, 0, tile_px, tile_px), Vector2i(i * tile_px, 0))
+		mapping[base_path] = Vector2i(i, 0)
+
+		var overlay_path: String = base_path.get_basename() + "_overlay.png"
+		var overlay_img: Image = _get_image(overlay_path)
+		if overlay_img != null:
+			overlay_img = _normalize(overlay_img, tile_px, tile_px)
+			atlas.blit_rect(overlay_img, Rect2i(0, 0, tile_px, tile_px), Vector2i(i * tile_px, tile_px))
+			mapping[overlay_path] = Vector2i(i, 1)
+
+	return {
+		"texture": ImageTexture.create_from_image(atlas),
+		"columns": cols,
+		"rows": rows,
+		"tile_pixels": tile_px,
+		"mapping": mapping,
+	}
+
+static func build_block_atlas_image_from_paths(base_paths: Array[String]) -> Dictionary:
+	var paths: Array[String] = base_paths.duplicate()
+	paths.sort()
+	if paths.is_empty():
+		return {}
+
+	var first_img: Image = _get_image(paths[0])
+	if first_img == null:
+		return {}
+
+	var tile_px: int = first_img.get_width()
+	if tile_px <= 0:
+		return {}
+
+	var cols: int = paths.size()
+	var rows: int = 2
+
+	var atlas: Image = Image.create(tile_px * cols, tile_px * rows, false, Image.FORMAT_RGBA8)
+	atlas.fill(Color(0.0, 0.0, 0.0, 0.0))
+
+	for i in range(cols):
+		var base_path: String = paths[i]
+		var img: Image = _get_image(base_path)
+		if img == null:
+			continue
+		img = _normalize(img, tile_px, tile_px)
+		atlas.blit_rect(img, Rect2i(0, 0, tile_px, tile_px), Vector2i(i * tile_px, 0))
+
+		var overlay_path: String = base_path.get_basename() + "_overlay.png"
+		var overlay_img: Image = _get_image(overlay_path)
+		if overlay_img != null:
+			overlay_img = _normalize(overlay_img, tile_px, tile_px)
+			atlas.blit_rect(overlay_img, Rect2i(0, 0, tile_px, tile_px), Vector2i(i * tile_px, tile_px))
+
+	return {
+		"image": atlas,
+		"columns": cols,
+		"rows": rows,
+		"tile_pixels": tile_px,
+	}
+
 
 static func _get_image(path: String) -> Image:
 	if not ResourceLoader.exists(path):

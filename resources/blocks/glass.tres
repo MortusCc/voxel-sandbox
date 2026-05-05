@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="BlockData" format=3 uid="uid://u55wmdi7og8t"]
+
+[ext_resource type="Script" uid="uid://dngoppel6k84e" path="res://src/voxel/block_data.gd" id="1"]
+[ext_resource type="Texture2D" uid="uid://bvjp5w05afs6d" path="res://resources/textures/block/glass.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = 7
+display_name = "玻璃"
+occludes_faces = false
+alpha_cutoff = 0.5
+icon_texture = ExtResource("2")
+tile_top = Vector2i(2, 0)
+tile_side = Vector2i(2, 0)
+tile_bottom = Vector2i(2, 0)

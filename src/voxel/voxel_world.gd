@@ -3,7 +3,10 @@ class_name VoxelWorld
 
 const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 const ItemDropScene: PackedScene = preload("res://scenes/item_drop.tscn")
+const FallingBlockScene: PackedScene = preload("res://scenes/falling_block.tscn")
 const AtlasBuilderScript := preload("res://src/voxel/atlas_builder.gd")
+const _MIN_I32: int = -2147483648
+const _PREBUILT_ATLAS_PNG_PATH: String = "res://resources/textures/block_atlas.png"
 
 @export var chunk_size: int = 16
 @export var atlas_columns: int = 4
@@ -51,7 +54,6 @@ var _highlight_mesh_instance: MeshInstance3D
 var _highlight_mesh: ImmediateMesh
 var _highlight_material: StandardMaterial3D
 var _highlight_last_voxel: Vector3i = Vector3i(2147483647, 2147483647, 2147483647)
-var _skylight_chunks: Dictionary = {}
 var _sky_brightness_current: float = -1.0
 var _stream_time_left: float = 0.0
 var _player: Node3D
@@ -60,12 +62,12 @@ var _pending_create: Array[Vector3i] = []
 var _pending_unload: Array[Vector3i] = []
 var _pending_mesh_rebuild: Array[Vector3i] = []
 var _last_player_center_chunk: Vector3i = Vector3i(2147483647, 2147483647, 2147483647)
+var _suppress_sand_schedule: bool = false
 
 func _ready() -> void:
 	_material = ShaderMaterial.new()
 	_material.shader = preload("res://shaders/voxel_lit.gdshader")
-	if atlas_texture == null:
-		atlas_texture = _build_default_atlas_texture()
+	_ensure_atlas_ready()
 	_apply_material_settings()
 
 	_player = get_node_or_null(player_path) as Node3D
@@ -92,10 +94,9 @@ func _physics_process(_delta: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		return
 	var center: Vector3i = _get_player_chunk_center()
-	if center == _last_player_center_chunk:
-		return
-	_last_player_center_chunk = center
-	_ensure_chunk_ready_now(center)
+	if center != _last_player_center_chunk:
+		_last_player_center_chunk = center
+		_ensure_chunk_ready_now(center)
 
 
 func _ensure_initial_chunks() -> void:
@@ -104,7 +105,6 @@ func _ensure_initial_chunks() -> void:
 	if _player == null:
 		if _chunks.is_empty():
 			var ch0: VoxelChunk = _create_chunk(Vector3i.ZERO, true)
-			_compute_skylight_for_chunk(ch0)
 			ch0.collision_enabled = true
 			ch0.rebuild_mesh(_sample_voxel_global, Callable(self, "_sample_skylight_global"))
 		return
@@ -112,11 +112,9 @@ func _ensure_initial_chunks() -> void:
 	var p: Vector3 = _player.global_position / max(0.0001, voxel_scale)
 	var pv: Vector3i = Vector3i(floori(p.x), floori(p.y), floori(p.z))
 	var center: Vector3i = _voxel_to_chunk_coord(pv)
-	center.y = 0
 
 	if not _chunks.has(center):
 		var chc: VoxelChunk = _create_chunk(center, true)
-		_compute_skylight_for_chunk(chc)
 		chc.collision_enabled = true
 		chc.rebuild_mesh(_sample_voxel_global, Callable(self, "_sample_skylight_global"))
 	_last_player_center_chunk = center
@@ -132,7 +130,6 @@ func _plan_chunk_streaming() -> void:
 	var p: Vector3 = _player.global_position / max(0.0001, voxel_scale)
 	var pv: Vector3i = Vector3i(floori(p.x), floori(p.y), floori(p.z))
 	var center: Vector3i = _voxel_to_chunk_coord(pv)
-	center.y = 0
 
 	var load_r: int = max(0, chunk_load_radius)
 	var unload_r: int = max(load_r, chunk_unload_radius)
@@ -168,7 +165,6 @@ func _process_chunk_ops() -> void:
 		if ch != null and is_instance_valid(ch):
 			ch.queue_free()
 		_chunks.erase(cc)
-		_skylight_chunks.erase(cc)
 		did_change = true
 		_mark_chunk_dirty(cc)
 		_mark_chunk_dirty(cc + Vector3i(1, 0, 0))
@@ -182,8 +178,7 @@ func _process_chunk_ops() -> void:
 		var cc: Vector3i = _pop_nearest_chunk(_pending_create, center)
 		if _chunks.has(cc):
 			continue
-		var chunk: VoxelChunk = _create_chunk(cc, true)
-		_compute_skylight_for_chunk(chunk)
+		_create_chunk(cc, true)
 		did_change = true
 		_mark_chunk_dirty(cc)
 		_mark_chunk_dirty(cc + Vector3i(1, 0, 0))
@@ -213,7 +208,6 @@ func _process_mesh_rebuilds() -> void:
 
 func _mark_chunk_dirty(chunk_coord: Vector3i) -> void:
 	var cc: Vector3i = chunk_coord
-	cc.y = 0
 	if not _chunks.has(cc):
 		return
 	if _pending_mesh_rebuild.has(cc):
@@ -239,11 +233,9 @@ func _pop_nearest_chunk(queue: Array[Vector3i], center: Vector3i) -> Vector3i:
 
 func _ensure_chunk_ready_now(chunk_coord: Vector3i) -> void:
 	var cc: Vector3i = chunk_coord
-	cc.y = 0
 	var ch: VoxelChunk = _chunks.get(cc, null)
 	if ch == null:
 		ch = _create_chunk(cc, true)
-		_compute_skylight_for_chunk(ch)
 	ch.collision_enabled = true
 	ch.rebuild_mesh(_sample_voxel_global, Callable(self, "_sample_skylight_global"))
 
@@ -254,7 +246,6 @@ func _get_player_chunk_center() -> Vector3i:
 	var p: Vector3 = _player.global_position / max(0.0001, voxel_scale)
 	var pv: Vector3i = Vector3i(floori(p.x), floori(p.y), floori(p.z))
 	var center: Vector3i = _voxel_to_chunk_coord(pv)
-	center.y = 0
 	return center
 
 func _apply_material_settings() -> void:
@@ -407,73 +398,6 @@ func _rebuild_chunks_local(center_chunk: Vector3i, radius_chunks: int) -> void:
 			if ch != null:
 				ch.rebuild_mesh(_sample_voxel_global, Callable(self, "_sample_skylight_global"))
 
-
-func _recompute_skylight_local(center_chunk: Vector3i, radius_chunks: int) -> void:
-	var r: int = max(0, radius_chunks)
-	var min_chunk: Vector3i = Vector3i(center_chunk.x - r, 0, center_chunk.z - r)
-	var max_chunk: Vector3i = Vector3i(center_chunk.x + r, 0, center_chunk.z + r)
-
-	for cz in range(min_chunk.z, max_chunk.z + 1):
-		for cx in range(min_chunk.x, max_chunk.x + 1):
-			var cc: Vector3i = Vector3i(cx, 0, cz)
-			if not _chunks.has(cc):
-				continue
-			var arr: PackedByteArray = PackedByteArray()
-			arr.resize(chunk_size * chunk_size * chunk_size)
-			arr.fill(0)
-			_skylight_chunks[cc] = arr
-
-	var queue: Array[Vector3i] = []
-	var head: int = 0
-
-	for cz in range(min_chunk.z, max_chunk.z + 1):
-		for cx in range(min_chunk.x, max_chunk.x + 1):
-			var cc: Vector3i = Vector3i(cx, 0, cz)
-			if not _chunks.has(cc):
-				continue
-			for z in range(chunk_size):
-				for x in range(chunk_size):
-					var gx: int = cc.x * chunk_size + x
-					var gz: int = cc.z * chunk_size + z
-					var light: int = 15
-					for y in range(chunk_size - 1, -1, -1):
-						var p: Vector3i = Vector3i(gx, y, gz)
-						var vt: int = _sample_voxel_global(p)
-						if vt != VoxelTypes.VoxelType.AIR:
-							light = 0
-							_set_skylight_global(p, 0)
-							continue
-						_set_skylight_global(p, light)
-						if light > 0:
-							queue.append(p)
-
-	var min_v: Vector3i = Vector3i(min_chunk.x * chunk_size, 0, min_chunk.z * chunk_size)
-	var max_v: Vector3i = Vector3i((max_chunk.x + 1) * chunk_size - 1, chunk_size - 1, (max_chunk.z + 1) * chunk_size - 1)
-	var offsets: Array[Vector3i] = [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 1, 0), Vector3i(0, -1, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]
-
-	while head < queue.size():
-		var p: Vector3i = queue[head]
-		head += 1
-		var cur: int = _get_skylight_global_raw(p)
-		if cur <= 1:
-			continue
-		var next_light: int = cur - 1
-		for off in offsets:
-			var np: Vector3i = p + off
-			if np.x < min_v.x or np.x > max_v.x or np.y < min_v.y or np.y > max_v.y or np.z < min_v.z or np.z > max_v.z:
-				continue
-			var cc: Vector3i = _voxel_to_chunk_coord(np)
-			cc.y = 0
-			if not _chunks.has(cc):
-				continue
-			if _sample_voxel_global(np) != VoxelTypes.VoxelType.AIR:
-				continue
-			if next_light <= _get_skylight_global_raw(np):
-				continue
-			_set_skylight_global(np, next_light)
-			queue.append(np)
-
-
 func _fill_chunk_terrain(chunk: VoxelChunk) -> void:
 	if chunk == null:
 		return
@@ -491,17 +415,25 @@ func _fill_chunk_terrain(chunk: VoxelChunk) -> void:
 			var h: int = base
 			if terrain_mode == 1 and _height_noise != null:
 				var n: float = _height_noise.get_noise_2d(gx, gz)
-				var biome_amp_mul: float = 0.6 if biome_id == 0 else (1.0 if biome_id == 1 else 0.75)
+				var biome_amp_mul: float = 0.6 if biome_id == 0 else (1.0 if biome_id == 1 else (0.75 if biome_id == 2 else 0.35))
 				h = clampi(base + roundi(n * (amp * biome_amp_mul)), 1, chunk_size - 2)
 			heightmap[x + z * chunk_size] = h
 			for y in range(chunk_size):
 				var vt: int = VoxelTypes.VoxelType.AIR
-				if y < h - 3:
-					vt = VoxelTypes.VoxelType.STONE
-				elif y < h - 1:
-					vt = VoxelTypes.VoxelType.DIRT
-				elif y < h:
-					vt = VoxelTypes.VoxelType.GRASS
+				if y == 0:
+					vt = VoxelTypes.VoxelType.BEDROCK
+				elif biome_id == 3:
+					if y < h - 4:
+						vt = VoxelTypes.VoxelType.STONE
+					elif y < h:
+						vt = VoxelTypes.VoxelType.SAND
+				else:
+					if y < h - 3:
+						vt = VoxelTypes.VoxelType.STONE
+					elif y < h - 1:
+						vt = VoxelTypes.VoxelType.DIRT
+					elif y < h:
+						vt = VoxelTypes.VoxelType.GRASS
 				chunk.set_voxel_local(x, y, z, vt)
 
 	_place_trees_for_chunk(chunk, heightmap)
@@ -624,26 +556,6 @@ func _build_tree_template(chunk: VoxelChunk, lx: int, lz: int, ground_h: int) ->
 			chunk.set_voxel_local(ax, y6, az, VoxelTypes.VoxelType.OAK_LEAVES)
 
 
-func _compute_skylight_for_chunk(chunk: VoxelChunk) -> void:
-	if chunk == null:
-		return
-	var cc: Vector3i = chunk.chunk_coord
-	var arr: PackedByteArray = PackedByteArray()
-	arr.resize(chunk_size * chunk_size * chunk_size)
-	arr.fill(0)
-
-	for z in range(chunk_size):
-		for x in range(chunk_size):
-			var light: int = 15
-			for y in range(chunk_size - 1, -1, -1):
-				var vt: int = chunk.get_voxel_local(x, y, z)
-				if vt != VoxelTypes.VoxelType.AIR:
-					light = 0
-				arr[x + y * chunk_size + z * chunk_size * chunk_size] = light
-
-	_skylight_chunks[cc] = arr
-
-
 func _fract(v: float) -> float:
 	return v - floor(v)
 
@@ -671,7 +583,7 @@ func _biome_id_at(gx: int, gz: int) -> int:
 	var wx: float = gx * voxel_scale
 	var wz: float = gz * voxel_scale
 	var n: float = _noise2(Vector2(wx, wz) * biome_map_scale + Vector2(float(terrain_seed) * 0.13, float(terrain_seed) * -0.37))
-	return floori(clampf(n, 0.0, 0.999) * 3.0)
+	return floori(clampf(n, 0.0, 0.999) * 4.0)
 
 func _sample_voxel_global(global_voxel: Vector3i) -> int:
 	var chunk_coord: Vector3i = _voxel_to_chunk_coord(global_voxel)
@@ -686,18 +598,37 @@ func get_voxel_global(global_voxel: Vector3i) -> int:
 	# 说明：对外提供的体素查询接口（用于天空系统判断“是否能看到天空”等逻辑）。
 	return _sample_voxel_global(global_voxel)
 
+func _sample_skylight_direct_global(global_voxel: Vector3i) -> int:
+	var chunk_coord: Vector3i = _voxel_to_chunk_coord(global_voxel)
+	var chunk: VoxelChunk = _chunks.get(chunk_coord, null)
+	if chunk == null:
+		return 15
+	var local: Vector3i = global_voxel - chunk_coord * chunk_size
+	if local.x < 0 or local.x >= chunk_size or local.z < 0 or local.z >= chunk_size:
+		return 15
+	var top_y: int = chunk.get_column_top_occluder_y(local.x, local.z)
+	if top_y == _MIN_I32:
+		return 15
+	return 15 if global_voxel.y > top_y else 0
+
 func _sample_skylight_global(global_voxel: Vector3i) -> int:
 	var chunk_coord: Vector3i = _voxel_to_chunk_coord(global_voxel)
-	var arr: PackedByteArray = _skylight_chunks.get(chunk_coord, PackedByteArray())
-	if arr.is_empty():
-		return 0
+	var chunk: VoxelChunk = _chunks.get(chunk_coord, null)
+	if chunk == null:
+		return 15
+	if not chunk.has_method("is_skylight_cache_valid") or not bool(chunk.call("is_skylight_cache_valid")):
+		return _sample_skylight_direct_global(global_voxel)
 	var local: Vector3i = global_voxel - chunk_coord * chunk_size
-	if local.x < 0 or local.x >= chunk_size or local.y < 0 or local.y >= chunk_size or local.z < 0 or local.z >= chunk_size:
-		return 0
-	var idx: int = local.x + local.y * chunk_size + local.z * chunk_size * chunk_size
-	return int(arr[idx])
+	if local.x < 0 or local.x >= chunk_size or local.z < 0 or local.z >= chunk_size:
+		return 15
+	if local.y < 0 or local.y >= chunk_size:
+		return _sample_skylight_direct_global(global_voxel)
+	return int(chunk.call("get_skylight_local", local.x, local.y, local.z))
 
 func set_voxel_global(global_voxel: Vector3i, voxel_type: int) -> void:
+	_set_voxel_global_internal(global_voxel, voxel_type, true)
+
+func _set_voxel_global_internal(global_voxel: Vector3i, voxel_type: int, schedule_sand: bool) -> void:
 	var chunk_coord: Vector3i = _voxel_to_chunk_coord(global_voxel)
 	var chunk: VoxelChunk = _chunks.get(chunk_coord, null)
 	if chunk == null:
@@ -705,12 +636,63 @@ func set_voxel_global(global_voxel: Vector3i, voxel_type: int) -> void:
 
 	var local: Vector3i = global_voxel - chunk_coord * chunk_size
 	chunk.set_voxel_local(local.x, local.y, local.z, voxel_type)
-	_recompute_skylight_local(chunk_coord, 2)
+
+	# 只重建“必需的”区块网格：自身 + 边界邻居（如果修改发生在边界）
 	_mark_chunk_dirty(chunk_coord)
-	_mark_chunk_dirty(chunk_coord + Vector3i(1, 0, 0))
-	_mark_chunk_dirty(chunk_coord + Vector3i(-1, 0, 0))
-	_mark_chunk_dirty(chunk_coord + Vector3i(0, 0, 1))
-	_mark_chunk_dirty(chunk_coord + Vector3i(0, 0, -1))
+	if local.x == 0:
+		_mark_chunk_dirty(chunk_coord + Vector3i(-1, 0, 0))
+	elif local.x == chunk_size - 1:
+		_mark_chunk_dirty(chunk_coord + Vector3i(1, 0, 0))
+	if local.z == 0:
+		_mark_chunk_dirty(chunk_coord + Vector3i(0, 0, -1))
+	elif local.z == chunk_size - 1:
+		_mark_chunk_dirty(chunk_coord + Vector3i(0, 0, 1))
+
+	if schedule_sand and not _suppress_sand_schedule:
+		_try_start_falling_sand_at(global_voxel)
+		_try_start_falling_sand_at(global_voxel + Vector3i(0, 1, 0))
+
+func _try_start_falling_sand_at(global_voxel: Vector3i) -> void:
+	if global_voxel.y <= 0:
+		return
+	if _sample_voxel_global(global_voxel) != VoxelTypes.VoxelType.SAND:
+		return
+	var below: Vector3i = global_voxel + Vector3i(0, -1, 0)
+	if _sample_voxel_global(below) != VoxelTypes.VoxelType.AIR:
+		return
+
+	var max_h: int = 256
+	var h: int = 1
+	while h < max_h:
+		var p: Vector3i = global_voxel + Vector3i(0, h, 0)
+		if _sample_voxel_global(p) != VoxelTypes.VoxelType.SAND:
+			break
+		h += 1
+
+	_suppress_sand_schedule = true
+	var yi: int = 0
+	while yi < h:
+		_set_voxel_global_internal(global_voxel + Vector3i(0, yi, 0), VoxelTypes.VoxelType.AIR, false)
+		yi += 1
+	_suppress_sand_schedule = false
+
+	_spawn_falling_block(global_voxel, VoxelTypes.VoxelType.SAND, h)
+
+func _spawn_falling_block(global_voxel: Vector3i, block_id: int, height_blocks: int = 1) -> void:
+	if FallingBlockScene == null:
+		return
+	var n: Node = FallingBlockScene.instantiate()
+	if n == null:
+		return
+	if n.has_method("set"):
+		n.set("block_id", block_id)
+		n.set("voxel_scale", voxel_scale)
+		n.set("height_blocks", max(1, height_blocks))
+	add_child(n)
+	if n is Node3D:
+		var h: int = max(1, height_blocks)
+		var cy: float = (global_voxel.y + 0.5) + (h - 1) * 0.5
+		(n as Node3D).global_position = Vector3(global_voxel.x + 0.5, cy, global_voxel.z + 0.5) * voxel_scale
 
 func _rebuild_chunk_and_neighbors(chunk_coord: Vector3i, local: Vector3i) -> void:
 	var chunk: VoxelChunk = _chunks.get(chunk_coord, null)
@@ -722,11 +704,6 @@ func _rebuild_chunk_and_neighbors(chunk_coord: Vector3i, local: Vector3i) -> voi
 		_rebuild_chunk(chunk_coord + Vector3i(-1, 0, 0))
 	elif local.x == chunk_size - 1:
 		_rebuild_chunk(chunk_coord + Vector3i(1, 0, 0))
-
-	if local.y == 0:
-		_rebuild_chunk(chunk_coord + Vector3i(0, -1, 0))
-	elif local.y == chunk_size - 1:
-		_rebuild_chunk(chunk_coord + Vector3i(0, 1, 0))
 
 	if local.z == 0:
 		_rebuild_chunk(chunk_coord + Vector3i(0, 0, -1))
@@ -745,95 +722,10 @@ func _rebuild_all_chunks_mesh() -> void:
 		if chunk != null:
 			chunk.rebuild_mesh(_sample_voxel_global, Callable(self, "_sample_skylight_global"))
 
-func _recompute_skylight() -> void:
-	_skylight_chunks.clear()
-	if _chunks.is_empty():
-		return
-
-	var min_chunk: Vector3i = Vector3i(2147483647, 2147483647, 2147483647)
-	var max_chunk: Vector3i = Vector3i(-2147483648, -2147483648, -2147483648)
-	for k in _chunks.keys():
-		var cc: Vector3i = k
-		min_chunk.x = min(min_chunk.x, cc.x)
-		min_chunk.y = min(min_chunk.y, cc.y)
-		min_chunk.z = min(min_chunk.z, cc.z)
-		max_chunk.x = max(max_chunk.x, cc.x)
-		max_chunk.y = max(max_chunk.y, cc.y)
-		max_chunk.z = max(max_chunk.z, cc.z)
-
-	var min_v: Vector3i = min_chunk * chunk_size
-	var max_v: Vector3i = (max_chunk + Vector3i.ONE) * chunk_size - Vector3i.ONE
-
-	for k in _chunks.keys():
-		var cc: Vector3i = k
-		var arr: PackedByteArray = PackedByteArray()
-		arr.resize(chunk_size * chunk_size * chunk_size)
-		arr.fill(0)
-		_skylight_chunks[cc] = arr
-
-	var queue: Array[Vector3i] = []
-	var head: int = 0
-
-	for x in range(min_v.x, max_v.x + 1):
-		for z in range(min_v.z, max_v.z + 1):
-			var light: int = 15
-			for y in range(max_v.y, min_v.y - 1, -1):
-				var p: Vector3i = Vector3i(x, y, z)
-				var vt: int = _sample_voxel_global(p)
-				if vt != VoxelTypes.VoxelType.AIR:
-					light = 0
-					_set_skylight_global(p, 0)
-					continue
-				_set_skylight_global(p, light)
-				if light > 0:
-					queue.push_back(p)
-
-	while head < queue.size():
-		var p: Vector3i = queue[head]
-		head += 1
-		var cur: int = _get_skylight_global_raw(p)
-		if cur <= 1:
-			continue
-
-		var next_light: int = cur - 1
-		for off in [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 1, 0), Vector3i(0, -1, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]:
-			var np: Vector3i = p + off
-			if np.x < min_v.x or np.x > max_v.x or np.y < min_v.y or np.y > max_v.y or np.z < min_v.z or np.z > max_v.z:
-				continue
-			if _sample_voxel_global(np) != VoxelTypes.VoxelType.AIR:
-				continue
-			if next_light <= _get_skylight_global_raw(np):
-				continue
-			_set_skylight_global(np, next_light)
-			queue.push_back(np)
-
-func _get_skylight_global_raw(global_voxel: Vector3i) -> int:
-	var chunk_coord: Vector3i = _voxel_to_chunk_coord(global_voxel)
-	var arr: PackedByteArray = _skylight_chunks.get(chunk_coord, PackedByteArray())
-	if arr.is_empty():
-		return 0
-	var local: Vector3i = global_voxel - chunk_coord * chunk_size
-	if local.x < 0 or local.x >= chunk_size or local.y < 0 or local.y >= chunk_size or local.z < 0 or local.z >= chunk_size:
-		return 0
-	var idx: int = local.x + local.y * chunk_size + local.z * chunk_size * chunk_size
-	return int(arr[idx])
-
-func _set_skylight_global(global_voxel: Vector3i, value: int) -> void:
-	var chunk_coord: Vector3i = _voxel_to_chunk_coord(global_voxel)
-	if not _skylight_chunks.has(chunk_coord):
-		return
-	var arr: PackedByteArray = _skylight_chunks[chunk_coord]
-	var local: Vector3i = global_voxel - chunk_coord * chunk_size
-	if local.x < 0 or local.x >= chunk_size or local.y < 0 or local.y >= chunk_size or local.z < 0 or local.z >= chunk_size:
-		return
-	var idx: int = local.x + local.y * chunk_size + local.z * chunk_size * chunk_size
-	arr[idx] = clampi(value, 0, 15)
-	_skylight_chunks[chunk_coord] = arr
-
 func _voxel_to_chunk_coord(global_voxel: Vector3i) -> Vector3i:
 	return Vector3i(
 		_floor_div(global_voxel.x, chunk_size),
-		_floor_div(global_voxel.y, chunk_size),
+		0,
 		_floor_div(global_voxel.z, chunk_size)
 	)
 
@@ -950,25 +842,119 @@ func _sign_int_from_float(v: float) -> int:
 		return -1
 	return 0
 
-func _build_default_atlas_texture() -> Texture2D:
-	var result: Dictionary = AtlasBuilderScript.build_block_atlas("res://resources/textures/block")
+func _ensure_atlas_ready() -> void:
+	var base_paths: Array[String] = _collect_atlas_base_paths()
+	var mapping: Dictionary = _compute_atlas_mapping(base_paths)
+	BlockRegistryScript.apply_atlas_mapping(mapping)
+
+	if atlas_texture == null:
+		if ResourceLoader.exists(_PREBUILT_ATLAS_PNG_PATH):
+			atlas_texture = load(_PREBUILT_ATLAS_PNG_PATH)
+		elif OS.has_feature("editor"):
+			atlas_texture = _build_and_save_prebuilt_atlas_png(base_paths)
+			_apply_mapping_and_save_blocks(mapping)
+		else:
+			push_error("缺少预构建方块图集（%s）。请在编辑器里运行一次项目以生成图集 PNG，然后再导出。" % _PREBUILT_ATLAS_PNG_PATH)
+
+	_tile_pixels = max(1, _tile_pixels)
+	if atlas_texture != null:
+		var w: int = atlas_texture.get_width()
+		var h: int = atlas_texture.get_height()
+		atlas_columns = max(1, floori(w / (_tile_pixels * 1.0)))
+		atlas_rows = max(1, floori(h / (_tile_pixels * 1.0)))
+
+func _apply_mapping_and_save_blocks(mapping: Dictionary) -> void:
+	if not OS.has_feature("editor"):
+		return
+	if mapping.is_empty():
+		return
+	var paths: PackedStringArray = BlockRegistryScript.get_known_block_paths()
+	for res_path in paths:
+		var b: Resource = load(res_path)
+		if b == null:
+			continue
+		var base: String = res_path.get_file().get_basename()
+		if base == "":
+			continue
+		var top_path: String = "res://resources/textures/block/" + base + "_top.png"
+		var side_path: String = "res://resources/textures/block/" + base + "_side.png"
+		var bottom_path: String = "res://resources/textures/block/" + base + "_bottom.png"
+		var main_path: String = "res://resources/textures/block/" + base + ".png"
+
+		var use_top: String = top_path if mapping.has(top_path) else main_path
+		var use_side: String = side_path if mapping.has(side_path) else main_path
+		var use_bottom: String = bottom_path if mapping.has(bottom_path) else use_top
+		if base == "grass_block":
+			var dirt_path: String = "res://resources/textures/block/dirt.png"
+			if mapping.has(dirt_path):
+				use_bottom = dirt_path
+
+		if mapping.has(use_top):
+			b.set("tile_top", mapping[use_top])
+		if mapping.has(use_side):
+			b.set("tile_side", mapping[use_side])
+		if mapping.has(use_bottom):
+			b.set("tile_bottom", mapping[use_bottom])
+		ResourceSaver.save(b, res_path)
+
+func _build_and_save_prebuilt_atlas_png(base_paths: Array[String]) -> Texture2D:
+	var result: Dictionary = AtlasBuilderScript.build_block_atlas_image_from_paths(base_paths)
 	if result.is_empty():
 		return null
+	var img: Image = result.get("image", null)
+	if img == null:
+		return null
+	var abs_path: String = ProjectSettings.globalize_path(_PREBUILT_ATLAS_PNG_PATH)
+	var err: Error = img.save_png(abs_path)
+	if err != OK:
+		push_error("保存方块图集 PNG 失败：%s（err=%s）" % [_PREBUILT_ATLAS_PNG_PATH, str(err)])
+		return null
+	return ImageTexture.create_from_image(img)
 
-	atlas_columns = max(1, str(result.get("columns", 1)).to_int())
-	atlas_rows = max(1, str(result.get("rows", 2)).to_int())
-	_tile_pixels = max(1, str(result.get("tile_pixels", 16)).to_int())
+func _compute_atlas_mapping(base_paths: Array[String]) -> Dictionary:
+	var mapping: Dictionary = {}
+	var cols: int = base_paths.size()
+	var i: int = 0
+	while i < cols:
+		var p: String = base_paths[i]
+		mapping[p] = Vector2i(i, 0)
+		var overlay_path: String = p.get_basename() + "_overlay.png"
+		if ResourceLoader.exists(overlay_path):
+			mapping[overlay_path] = Vector2i(i, 1)
+		i += 1
+	return mapping
 
-	var mapping: Dictionary = result.get("mapping", {})
-	BlockRegistry.apply_atlas_mapping(mapping)
-
-	return result.get("texture", null)
+func _collect_atlas_base_paths() -> Array[String]:
+	var out: Array[String] = []
+	var seen: Dictionary = {}
+	var paths: PackedStringArray = BlockRegistryScript.get_known_block_paths()
+	for res_path in paths:
+		var base: String = res_path.get_file().get_basename()
+		if base == "":
+			continue
+		var candidates: Array[String] = [
+			"res://resources/textures/block/" + base + ".png",
+			"res://resources/textures/block/" + base + "_top.png",
+			"res://resources/textures/block/" + base + "_side.png",
+			"res://resources/textures/block/" + base + "_bottom.png",
+		]
+		for p in candidates:
+			if seen.has(p):
+				continue
+			if not ResourceLoader.exists(p):
+				continue
+			seen[p] = true
+			out.push_back(p)
+	out.sort()
+	return out
 
 func break_voxel_at_ray(origin: Vector3, direction: Vector3) -> bool:
 	var result: Dictionary = raycast_voxel(origin, direction, max_interact_distance)
 	if not result.get("hit", false):
 		return false
 	var vt: int = result.get("type", VoxelTypes.VoxelType.AIR)
+	if vt == VoxelTypes.VoxelType.BEDROCK:
+		return false
 	set_voxel_global(result["voxel"], VoxelTypes.VoxelType.AIR)
 	_spawn_item_drop(vt, 1, (Vector3(result["voxel"]) + Vector3(0.5, 0.5, 0.5)) * voxel_scale)
 	return true

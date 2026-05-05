@@ -356,6 +356,10 @@ func _init_hotbar() -> void:
 	_hotbar_counts[3] = 32
 	_hotbar_item_ids[4] = 5
 	_hotbar_counts[4] = 32
+	_hotbar_item_ids[5] = VoxelTypes.VoxelType.GLASS
+	_hotbar_counts[5] = 32
+	_hotbar_item_ids[6] = VoxelTypes.VoxelType.SAND
+	_hotbar_counts[6] = 32
 
 	_refresh_hotbar_ui()
 
@@ -413,6 +417,8 @@ func _add_to_hotbar(item_id: int, amount: int) -> int:
 	if amount <= 0:
 		return 0
 	if item_id == VoxelTypes.VoxelType.AIR:
+		return amount
+	if item_id == VoxelTypes.VoxelType.BEDROCK:
 		return amount
 	if _hotbar_item_ids.size() != 9 or _hotbar_counts.size() != 9:
 		return amount

@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="BlockData" format=3]
+
+[ext_resource type="Script" uid="uid://dngoppel6k84e" path="res://src/voxel/block_data.gd" id="1"]
+[ext_resource type="Texture2D" path="res://resources/textures/block/bedrock.png" id="2"]
+
+[resource]
+script = ExtResource("1")
+id = 6
+display_name = "基岩"
+solid = true
+occludes_faces = true
+icon_texture = ExtResource("2")
+tile_top = Vector2i(0, 0)
+tile_side = Vector2i(0, 0)
+tile_bottom = Vector2i(0, 0)

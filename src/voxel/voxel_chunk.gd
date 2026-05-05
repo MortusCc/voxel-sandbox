@@ -27,9 +27,21 @@ const FACE_CORNERS: Array = [
 
 var chunk_coord: Vector3i = Vector3i.ZERO
 
-var _voxels: PackedByteArray = PackedByteArray()
+const _MIN_I32: int = -2147483648
+
+# 说明：本项目的区块在 X/Z 方向按 16×16 切分，Y 方向不切分（同一区块内 Y 可任意高度）。
+# 体素数据采用“按列存储”：每个 (x,z) 保存一个 y->voxel_type 的字典，避免为无限高度分配大数组。
+var _columns: Array[Dictionary] = []
+var _col_top_y: PackedInt32Array = PackedInt32Array()
+var _col_bottom_y: PackedInt32Array = PackedInt32Array()
+var _min_y: int = 0
+var _max_y: int = -1
 var _static_body: StaticBody3D
 var _collision_shape: CollisionShape3D
+var _col_top_occluder_y: PackedInt32Array = PackedInt32Array()
+var _skylight_cache: PackedByteArray = PackedByteArray()
+var _skylight_cache_valid: bool = false
+var _skylight_direct: Callable
 
 func _ready() -> void:
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
@@ -42,32 +54,124 @@ func setup(new_chunk_coord: Vector3i) -> void:
 	_ensure_voxel_buffer()
 
 func _ensure_voxel_buffer() -> void:
-	# VoxelWorld 可能会在节点进入场景树（_ready）之前调用 fill_test_terrain()。
-	# 因此，Chunk 必须在任何体素读写之前确保 _voxels 已正确分配长度，避免 PackedByteArray 越界。
-	if _voxels.size() != chunk_size * chunk_size * chunk_size:
+	# VoxelWorld 可能会在节点进入场景树（_ready）之前调用地形填充/放置方块。
+	# 因此，Chunk 必须在任何体素读写之前确保列存储已初始化。
+	if _columns.size() != chunk_size * chunk_size:
 		_initialize_voxels()
 
 func _initialize_voxels() -> void:
-	_voxels.resize(chunk_size * chunk_size * chunk_size)
-	_voxels.fill(0)
+	_columns.clear()
+	_columns.resize(chunk_size * chunk_size)
+	for i in range(_columns.size()):
+		_columns[i] = {}
+	_col_top_y.resize(chunk_size * chunk_size)
+	_col_bottom_y.resize(chunk_size * chunk_size)
+	_col_top_occluder_y.resize(chunk_size * chunk_size)
+	for i in range(_col_top_y.size()):
+		_col_top_y[i] = _MIN_I32
+		_col_bottom_y[i] = _MIN_I32
+		_col_top_occluder_y[i] = _MIN_I32
+	_min_y = 0
+	_max_y = -1
 
-func _to_index(x: int, y: int, z: int) -> int:
-	return x + y * chunk_size + z * chunk_size * chunk_size
+func _col_index(x: int, z: int) -> int:
+	return x + z * chunk_size
 
-func is_in_bounds(x: int, y: int, z: int) -> bool:
-	return x >= 0 and x < chunk_size and y >= 0 and y < chunk_size and z >= 0 and z < chunk_size
+func is_in_bounds(x: int, _y: int, z: int) -> bool:
+	return x >= 0 and x < chunk_size and z >= 0 and z < chunk_size
 
 func get_voxel_local(x: int, y: int, z: int) -> int:
 	_ensure_voxel_buffer()
 	if not is_in_bounds(x, y, z):
 		return VoxelTypes.VoxelType.AIR
-	return _voxels[_to_index(x, y, z)]
+	var col: Dictionary = _columns[_col_index(x, z)]
+	return int(col.get(y, VoxelTypes.VoxelType.AIR))
 
 func set_voxel_local(x: int, y: int, z: int, voxel_type: int) -> void:
 	_ensure_voxel_buffer()
 	if not is_in_bounds(x, y, z):
 		return
-	_voxels[_to_index(x, y, z)] = voxel_type
+	var idx: int = _col_index(x, z)
+	var col: Dictionary = _columns[idx]
+	if voxel_type == VoxelTypes.VoxelType.AIR:
+		if col.has(y):
+			var old_type: int = int(col.get(y, VoxelTypes.VoxelType.AIR))
+			col.erase(y)
+			if _col_top_y[idx] == y or _col_bottom_y[idx] == y:
+				_recompute_column_minmax(idx, col)
+			if BlockRegistryScript.occludes_faces(old_type) and _col_top_occluder_y[idx] == y:
+				_recompute_column_occluder_top(idx, col)
+			if _max_y == y or _min_y == y:
+				_recompute_chunk_minmax()
+	else:
+		col[y] = voxel_type
+		if _col_top_y[idx] == _MIN_I32 or y > _col_top_y[idx]:
+			_col_top_y[idx] = y
+		if _col_bottom_y[idx] == _MIN_I32 or y < _col_bottom_y[idx]:
+			_col_bottom_y[idx] = y
+		if BlockRegistryScript.occludes_faces(voxel_type):
+			if _col_top_occluder_y[idx] == _MIN_I32 or y > _col_top_occluder_y[idx]:
+				_col_top_occluder_y[idx] = y
+		if _max_y < 0 or y > _max_y:
+			_max_y = y
+		if _max_y < 0 or y < _min_y:
+			_min_y = y
+	_columns[idx] = col
+
+
+func get_column_top_y(x: int, z: int) -> int:
+	_ensure_voxel_buffer()
+	if not is_in_bounds(x, 0, z):
+		return _MIN_I32
+	return int(_col_top_y[_col_index(x, z)])
+
+func get_column_top_occluder_y(x: int, z: int) -> int:
+	_ensure_voxel_buffer()
+	if not is_in_bounds(x, 0, z):
+		return _MIN_I32
+	return int(_col_top_occluder_y[_col_index(x, z)])
+
+func _recompute_column_occluder_top(idx: int, col: Dictionary) -> void:
+	var top: int = _MIN_I32
+	for k in col.keys():
+		var yy: int = int(k)
+		var vt: int = int(col[k])
+		if not BlockRegistryScript.occludes_faces(vt):
+			continue
+		if top == _MIN_I32 or yy > top:
+			top = yy
+	_col_top_occluder_y[idx] = top
+
+
+func _recompute_column_minmax(idx: int, col: Dictionary) -> void:
+	var top: int = _MIN_I32
+	var bottom: int = _MIN_I32
+	for k in col.keys():
+		var yy: int = int(k)
+		if top == _MIN_I32 or yy > top:
+			top = yy
+		if bottom == _MIN_I32 or yy < bottom:
+			bottom = yy
+	_col_top_y[idx] = top
+	_col_bottom_y[idx] = bottom
+
+
+func _recompute_chunk_minmax() -> void:
+	var top: int = _MIN_I32
+	var bottom: int = _MIN_I32
+	for i in range(_col_top_y.size()):
+		var ct: int = int(_col_top_y[i])
+		if ct != _MIN_I32 and (top == _MIN_I32 or ct > top):
+			top = ct
+		var cb: int = int(_col_bottom_y[i])
+		if cb != _MIN_I32 and (bottom == _MIN_I32 or cb < bottom):
+			bottom = cb
+	if top == _MIN_I32:
+		_min_y = 0
+		_max_y = -1
+	else:
+		_min_y = bottom
+		_max_y = top
 
 func fill_test_terrain() -> void:
 	# 生成一个简单的测试地形：下半部分为泥土/石头，上面一层草
@@ -88,15 +192,29 @@ func fill_test_terrain() -> void:
 func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	# sample_neighbor: (global_voxel_pos: Vector3i) -> int，用于跨 Chunk 查询相邻体素
 	_ensure_voxel_buffer()
+	_skylight_cache_valid = false
+	_skylight_direct = sample_skylight
+	_build_skylight_cache(sample_neighbor, sample_skylight)
+	var skylight_callable: Callable = Callable(self, "_sample_skylight_cached")
 	var vertices: PackedVector3Array = PackedVector3Array()
 	var normals: PackedVector3Array = PackedVector3Array()
 	var uvs: PackedVector2Array = PackedVector2Array()
 	var uv2s: PackedVector2Array = PackedVector2Array()
 	var colors: PackedColorArray = PackedColorArray()
 	var indices: PackedInt32Array = PackedInt32Array()
-
 	var base_vertex_index: int = 0
 	var s: float = voxel_scale
+
+	# 说明：为减少重复查询与重复计算，这里对“按方块类型不变”的数据做缓存：
+	# - BlockData 资源引用
+	# - 每个面的 tile_uv_rect
+	# - tint_mode/use_side_overlay/alpha_cutoff
+	var block_cache: Dictionary = {}
+	var tile_uv_cache: Dictionary = {}
+	var tint_mode_cache: Dictionary = {}
+	var side_overlay_cache: Dictionary = {}
+	var alpha_cutoff_cache: Dictionary = {}
+	var leaf_flag_cache: Dictionary = {}
 
 	# --- INDEPENDENT DESIGN START ---
 	# 程序化网格生成 + 面剔除：
@@ -105,20 +223,57 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	# - 如果相邻是实体体素，说明该面被遮挡，不生成。
 	#
 	# 这里“剔除”的核心不是 GPU 的背面剔除，而是“根本不生成内部面”，减少顶点数与三角形数。
+	if _max_y < _min_y:
+		mesh = null
+		_update_collision_from_mesh()
+		return
+
 	for z in range(chunk_size):
-		for y in range(chunk_size):
-			for x in range(chunk_size):
-				var voxel_type: int = get_voxel_local(x, y, z)
+		for x in range(chunk_size):
+			var col: Dictionary = _columns[_col_index(x, z)]
+			if col.is_empty():
+				continue
+			for k in col.keys():
+				var y: int = int(k)
+				var voxel_type: int = int(col[k])
 				if not BlockRegistryScript.is_solid(voxel_type):
 					continue
 
 				var global_voxel: Vector3i = chunk_coord * chunk_size + Vector3i(x, y, z)
+				var local_voxel: Vector3i = Vector3i(x, y, z)
+				var biome_id: int = _biome_id_at(global_voxel.x, global_voxel.z)
+
+				var block: Resource = block_cache.get(voxel_type, null)
+				if block == null:
+					block = BlockRegistryScript.get_block(voxel_type)
+					block_cache[voxel_type] = block
+
+				var tint_mode: int = 0
+				var use_side_overlay: bool = false
+				var alpha_cutoff: float = 0.0
+				var leaf_flag: float = 0.0
+				if tint_mode_cache.has(voxel_type):
+					tint_mode = int(tint_mode_cache[voxel_type])
+					use_side_overlay = bool(side_overlay_cache[voxel_type])
+					alpha_cutoff = float(alpha_cutoff_cache[voxel_type])
+					leaf_flag = float(leaf_flag_cache[voxel_type])
+				else:
+					if block != null:
+						tint_mode = str(block.get("tint_mode")).to_int()
+						use_side_overlay = bool(block.get("use_side_overlay"))
+						alpha_cutoff = str(block.get("alpha_cutoff")).to_float()
+					leaf_flag = 1.0 if tint_mode == 2 else 0.0
+					tint_mode_cache[voxel_type] = tint_mode
+					side_overlay_cache[voxel_type] = use_side_overlay
+					alpha_cutoff_cache[voxel_type] = alpha_cutoff
+					leaf_flag_cache[voxel_type] = leaf_flag
 
 				var cx: Array = FACE_CORNERS[VoxelTypes.Face.POS_X]
 				base_vertex_index = _try_add_face(
 					VoxelTypes.Face.POS_X,
 					voxel_type,
 					global_voxel,
+					local_voxel,
 					Vector3i(1, 0, 0),
 					cx[0],
 					cx[1],
@@ -126,7 +281,14 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					cx[3],
 					s,
 					sample_neighbor,
-					sample_skylight,
+					skylight_callable,
+					block,
+					tint_mode,
+					use_side_overlay,
+					alpha_cutoff,
+					leaf_flag,
+					biome_id,
+					tile_uv_cache,
 					vertices,
 					normals,
 					uvs,
@@ -140,6 +302,7 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					VoxelTypes.Face.NEG_X,
 					voxel_type,
 					global_voxel,
+					local_voxel,
 					Vector3i(-1, 0, 0),
 					cnx[0],
 					cnx[1],
@@ -147,7 +310,14 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					cnx[3],
 					s,
 					sample_neighbor,
-					sample_skylight,
+					skylight_callable,
+					block,
+					tint_mode,
+					use_side_overlay,
+					alpha_cutoff,
+					leaf_flag,
+					biome_id,
+					tile_uv_cache,
 					vertices,
 					normals,
 					uvs,
@@ -161,6 +331,7 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					VoxelTypes.Face.POS_Y,
 					voxel_type,
 					global_voxel,
+					local_voxel,
 					Vector3i(0, 1, 0),
 					cy[0],
 					cy[1],
@@ -168,7 +339,14 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					cy[3],
 					s,
 					sample_neighbor,
-					sample_skylight,
+					skylight_callable,
+					block,
+					tint_mode,
+					use_side_overlay,
+					alpha_cutoff,
+					leaf_flag,
+					biome_id,
+					tile_uv_cache,
 					vertices,
 					normals,
 					uvs,
@@ -182,6 +360,7 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					VoxelTypes.Face.NEG_Y,
 					voxel_type,
 					global_voxel,
+					local_voxel,
 					Vector3i(0, -1, 0),
 					cny[0],
 					cny[1],
@@ -189,7 +368,14 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					cny[3],
 					s,
 					sample_neighbor,
-					sample_skylight,
+					skylight_callable,
+					block,
+					tint_mode,
+					use_side_overlay,
+					alpha_cutoff,
+					leaf_flag,
+					biome_id,
+					tile_uv_cache,
 					vertices,
 					normals,
 					uvs,
@@ -203,6 +389,7 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					VoxelTypes.Face.POS_Z,
 					voxel_type,
 					global_voxel,
+					local_voxel,
 					Vector3i(0, 0, 1),
 					cz[0],
 					cz[1],
@@ -210,7 +397,14 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					cz[3],
 					s,
 					sample_neighbor,
-					sample_skylight,
+					skylight_callable,
+					block,
+					tint_mode,
+					use_side_overlay,
+					alpha_cutoff,
+					leaf_flag,
+					biome_id,
+					tile_uv_cache,
 					vertices,
 					normals,
 					uvs,
@@ -224,6 +418,7 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					VoxelTypes.Face.NEG_Z,
 					voxel_type,
 					global_voxel,
+					local_voxel,
 					Vector3i(0, 0, -1),
 					cnz[0],
 					cnz[1],
@@ -231,7 +426,14 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 					cnz[3],
 					s,
 					sample_neighbor,
-					sample_skylight,
+					skylight_callable,
+					block,
+					tint_mode,
+					use_side_overlay,
+					alpha_cutoff,
+					leaf_flag,
+					biome_id,
+					tile_uv_cache,
 					vertices,
 					normals,
 					uvs,
@@ -242,6 +444,12 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 				)
 	# --- INDEPENDENT DESIGN END ---
 
+	var arr_mesh: ArrayMesh = ArrayMesh.new()
+	if vertices.size() <= 0:
+		mesh = null
+		_update_collision_from_mesh()
+		return
+
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
@@ -250,17 +458,125 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	arrays[Mesh.ARRAY_TEX_UV2] = uv2s
 	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = indices
-
-	var arr_mesh: ArrayMesh = ArrayMesh.new()
-	if vertices.size() > 0:
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	mesh = arr_mesh
 	_update_collision_from_mesh()
+
+func _sample_skylight_cached(global_voxel: Vector3i) -> int:
+	if not _skylight_cache_valid:
+		if _skylight_direct.is_null():
+			return 15
+		return int(_skylight_direct.call(global_voxel))
+	var local: Vector3i = global_voxel - chunk_coord * chunk_size
+	if local.x < 0 or local.x >= chunk_size or local.z < 0 or local.z >= chunk_size:
+		if _skylight_direct.is_null():
+			return 15
+		return int(_skylight_direct.call(global_voxel))
+	if local.y < 0 or local.y >= chunk_size:
+		if _skylight_direct.is_null():
+			return 15
+		return int(_skylight_direct.call(global_voxel))
+	var idx: int = local.x + chunk_size * (local.z + chunk_size * local.y)
+	if idx < 0 or idx >= _skylight_cache.size():
+		return 0
+	return int(_skylight_cache[idx])
+
+func is_skylight_cache_valid() -> bool:
+	return _skylight_cache_valid
+
+func get_skylight_local(x: int, y: int, z: int) -> int:
+	if not _skylight_cache_valid:
+		return 0
+	if x < 0 or x >= chunk_size or y < 0 or y >= chunk_size or z < 0 or z >= chunk_size:
+		return 0
+	var idx: int = x + chunk_size * (z + chunk_size * y)
+	if idx < 0 or idx >= _skylight_cache.size():
+		return 0
+	return int(_skylight_cache[idx])
+
+func _is_light_passable(voxel_type: int) -> bool:
+	if voxel_type == VoxelTypes.VoxelType.AIR:
+		return true
+	return not BlockRegistryScript.occludes_faces(voxel_type)
+
+func _build_skylight_cache(sample_neighbor: Callable, sample_skylight: Callable) -> void:
+	_skylight_cache.clear()
+	_skylight_cache.resize(chunk_size * chunk_size * chunk_size)
+	_skylight_cache.fill(0)
+	var q: Array[Vector3i] = []
+
+	for z in range(chunk_size):
+		for x in range(chunk_size):
+			for y in range(chunk_size - 1, -1, -1):
+				var vt: int = get_voxel_local(x, y, z)
+				if not _is_light_passable(vt):
+					break
+				var idx0: int = x + chunk_size * (z + chunk_size * y)
+				_skylight_cache[idx0] = 15
+				q.push_back(Vector3i(x, y, z))
+
+	var dirs: Array[Vector3i] = [
+		Vector3i(1, 0, 0),
+		Vector3i(-1, 0, 0),
+		Vector3i(0, 0, 1),
+		Vector3i(0, 0, -1),
+		Vector3i(0, 1, 0),
+		Vector3i(0, -1, 0),
+	]
+
+	if not sample_skylight.is_null():
+		for z2 in range(chunk_size):
+			for x2 in range(chunk_size):
+				for y2 in range(chunk_size):
+					if x2 != 0 and x2 != chunk_size - 1 and z2 != 0 and z2 != chunk_size - 1:
+						continue
+					var vt2: int = get_voxel_local(x2, y2, z2)
+					if not _is_light_passable(vt2):
+						continue
+					var g: Vector3i = chunk_coord * chunk_size + Vector3i(x2, y2, z2)
+					for d in dirs:
+						var nl: Vector3i = Vector3i(x2, y2, z2) + d
+						if nl.x >= 0 and nl.x < chunk_size and nl.y >= 0 and nl.y < chunk_size and nl.z >= 0 and nl.z < chunk_size:
+							continue
+						var out_light: int = int(sample_skylight.call(g + d))
+						if out_light <= 0:
+							continue
+						var idx1: int = x2 + chunk_size * (z2 + chunk_size * y2)
+						var cur: int = int(_skylight_cache[idx1])
+						var cand: int = max(0, out_light - 2)
+						if cand > cur:
+							_skylight_cache[idx1] = cand
+							q.push_back(Vector3i(x2, y2, z2))
+
+	while not q.is_empty():
+		var p: Vector3i = q.pop_back()
+		var idxp: int = p.x + chunk_size * (p.z + chunk_size * p.y)
+		var lv: int = int(_skylight_cache[idxp])
+		if lv <= 1:
+			continue
+		var next_lv: int = lv - 2
+		if next_lv <= 0:
+			continue
+		for d2 in dirs:
+			var np: Vector3i = p + d2
+			if np.x < 0 or np.x >= chunk_size or np.y < 0 or np.y >= chunk_size or np.z < 0 or np.z >= chunk_size:
+				continue
+			var vt3: int = get_voxel_local(np.x, np.y, np.z)
+			if not _is_light_passable(vt3):
+				continue
+			var idxn: int = np.x + chunk_size * (np.z + chunk_size * np.y)
+			if int(_skylight_cache[idxn]) >= next_lv:
+				continue
+			_skylight_cache[idxn] = next_lv
+			q.push_back(np)
+
+	_skylight_cache_valid = true
 
 func _try_add_face(
 	face: int,
 	voxel_type: int,
 	global_voxel: Vector3i,
+	local_voxel: Vector3i,
 	neighbor_offset: Vector3i,
 	v0: Vector3,
 	v1: Vector3,
@@ -269,6 +585,13 @@ func _try_add_face(
 	s: float,
 	sample_neighbor: Callable,
 	sample_skylight: Callable,
+	block: Resource,
+	tint_mode: int,
+	use_side_overlay: bool,
+	alpha_cutoff: float,
+	leaf_flag: float,
+	biome_id: int,
+	tile_uv_cache: Dictionary,
 	vertices: PackedVector3Array,
 	normals: PackedVector3Array,
 	uvs: PackedVector2Array,
@@ -278,7 +601,14 @@ func _try_add_face(
 	base_vertex_index: int
 ) -> int:
 	var neighbor_global: Vector3i = global_voxel + neighbor_offset
-	var neighbor_type: int = sample_neighbor.call(neighbor_global)
+	var neighbor_type: int = VoxelTypes.VoxelType.AIR
+	var nl: Vector3i = local_voxel + neighbor_offset
+	if is_in_bounds(nl.x, nl.y, nl.z):
+		neighbor_type = get_voxel_local(nl.x, nl.y, nl.z)
+	else:
+		neighbor_type = int(sample_neighbor.call(neighbor_global))
+	if voxel_type == VoxelTypes.VoxelType.GLASS and neighbor_type == voxel_type:
+		return base_vertex_index
 	if BlockRegistryScript.occludes_faces(neighbor_type):
 		return base_vertex_index
 
@@ -296,54 +626,23 @@ func _try_add_face(
 	# 1) 根据 voxel_type 与 face，查到其在图集中的 tile 坐标（整格索引）
 	# 2) 再把 tile 坐标转换为 [0,1] 的 UV 区间
 	# 3) 为该面 4 个顶点填充对应 UV
-	var block: Resource = BlockRegistryScript.get_block(voxel_type)
-	var tile: Vector2i = Vector2i.ZERO
-	if block != null:
-		tile = block.call("tile_for_face", face)
-	var tile_uv_rect: Rect2 = _tile_uv_rect(tile)
+	var cache_key: int = voxel_type * 8 + face
+	var tile_uv_rect: Rect2 = tile_uv_cache.get(cache_key, Rect2())
+	if tile_uv_rect.size == Vector2.ZERO:
+		var tile: Vector2i = Vector2i.ZERO
+		if block != null:
+			tile = block.call("tile_for_face", face)
+		tile_uv_rect = _tile_uv_rect(tile)
+		tile_uv_cache[cache_key] = tile_uv_rect
 	# --- INDEPENDENT DESIGN END ---
 
 	var start: int = base_vertex_index
 
-	var corners: Array[Vector3] = [v0, v1, v2, v3]
-	var positions: Array[Vector3] = []
-	var face_uvs: Array[Vector2] = []
-	positions.resize(4)
-	face_uvs.resize(4)
-
-	for i in range(4):
-		positions[i] = local_origin + corners[i] * s
-		var uv_local: Vector2 = _face_uv_local(face, corners[i])
-		face_uvs[i] = tile_uv_rect.position + Vector2(tile_uv_rect.size.x * uv_local.x, tile_uv_rect.size.y * uv_local.y)
-
-	vertices.push_back(positions[0])
-	vertices.push_back(positions[1])
-	vertices.push_back(positions[2])
-	vertices.push_back(positions[3])
-
-	for i in range(4):
-		normals.push_back(face_normal)
-
-	for i in range(4):
-		uvs.push_back(face_uvs[i])
-
-	var tint_mode: int = 0
-	var use_side_overlay: bool = false
-	var alpha_cutoff: float = 0.0
-	if block != null:
-		tint_mode = str(block.get("tint_mode")).to_int()
-		use_side_overlay = bool(block.get("use_side_overlay"))
-		alpha_cutoff = str(block.get("alpha_cutoff")).to_float()
-
-	var leaf_flag: float = 1.0 if tint_mode == 2 else 0.0
 	# 说明：把“是否树叶(0/1)”与“群系ID(0/1/2)”打包到 UV2.x，确保同一个方块 6 个面颜色一致。
 	# 解码规则在 voxel_lit.gdshader 中：
 	# - leaf_mask = step(0.5, UV2.x)
 	# - biome_id = floor((UV2.x - leaf_mask*0.5) * 8.0)
-	var biome_id: int = _biome_id_at(global_voxel.x, global_voxel.z)
 	var uv2_x: float = leaf_flag * 0.5 + (float(biome_id) + 0.5) * (1.0 / 8.0)
-	for i in range(4):
-		uv2s.push_back(Vector2(uv2_x, alpha_cutoff))
 
 	var grass_top_mask: float = 0.0
 	if tint_mode == 1 and face == VoxelTypes.Face.POS_Y:
@@ -354,7 +653,15 @@ func _try_add_face(
 	var grass_side_mask: float = 0.0
 	if use_side_overlay and (face == VoxelTypes.Face.POS_X or face == VoxelTypes.Face.NEG_X or face == VoxelTypes.Face.POS_Z or face == VoxelTypes.Face.NEG_Z):
 		grass_side_mask = 1.0
+
+	var corners: Array[Vector3] = [v0, v1, v2, v3]
 	for i in range(4):
+		var pos: Vector3 = local_origin + corners[i] * s
+		vertices.push_back(pos)
+		normals.push_back(face_normal)
+		var uv_local: Vector2 = _face_uv_local(face, corners[i])
+		uvs.push_back(tile_uv_rect.position + Vector2(tile_uv_rect.size.x * uv_local.x, tile_uv_rect.size.y * uv_local.y))
+		uv2s.push_back(Vector2(uv2_x, alpha_cutoff))
 		colors.push_back(Color(grass_top_mask, grass_side_mask, sky_light01, block_light01))
 
 	indices.push_back(start + 0)
@@ -505,4 +812,3 @@ func _update_collision_from_mesh() -> void:
 	_collision_shape.shape = shape
 	_static_body.collision_layer = 1
 	_static_body.collision_mask = 2
-

@@ -3,6 +3,16 @@ class_name BlockRegistry
 
 static var _blocks: Dictionary = {}
 static var _atlas_mapping: Dictionary = {}
+static var _known_block_paths: PackedStringArray = PackedStringArray([
+	"res://resources/blocks/grass_block.tres",
+	"res://resources/blocks/dirt.tres",
+	"res://resources/blocks/stone.tres",
+	"res://resources/blocks/oak_log.tres",
+	"res://resources/blocks/oak_leaves.tres",
+	"res://resources/blocks/bedrock.tres",
+	"res://resources/blocks/glass.tres",
+	"res://resources/blocks/sand.tres",
+])
 
 static func _ensure_loaded() -> void:
 	if not _blocks.is_empty():
@@ -11,6 +21,7 @@ static func _ensure_loaded() -> void:
 
 	var dir: DirAccess = DirAccess.open("res://resources/blocks")
 	if dir == null:
+		_load_known_blocks()
 		return
 
 	dir.list_dir_begin()
@@ -33,8 +44,29 @@ static func _ensure_loaded() -> void:
 		_blocks[id_value] = res
 	dir.list_dir_end()
 
+	# 说明：导出后 res:// 下的目录枚举可能只返回 *.gd / *.import 等文件，
+	# 导致扫描不到任何 .tres，从而注册表为空，最终所有方块都回退到 tile(0,0)。
+	# 如果扫描结果异常（只有 AIR），则回退到固定清单加载，确保导出版本稳定。
+	if _blocks.size() <= 1:
+		_load_known_blocks()
+
 	if not _atlas_mapping.is_empty():
 		_apply_atlas_mapping_internal(_atlas_mapping)
+
+static func _load_known_blocks() -> void:
+	for p in _known_block_paths:
+		var res: Resource = load(p)
+		if res == null:
+			continue
+		var id_value: int = str(res.get("id")).to_int()
+		if id_value <= 0:
+			continue
+		_blocks[id_value] = res
+	if not _atlas_mapping.is_empty():
+		_apply_atlas_mapping_internal(_atlas_mapping)
+
+static func get_known_block_paths() -> PackedStringArray:
+	return _known_block_paths
 
 static func get_block(id: int) -> Resource:
 	_ensure_loaded()
