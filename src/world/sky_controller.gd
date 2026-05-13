@@ -165,18 +165,21 @@ func _ready() -> void:
 	_apply_all(0.0)
 
 
+## 每帧推进昼夜时间 + 应用所有环境参数
 func _process(delta: float) -> void:
+	# 时间推进：delta / day_length_seconds = 本帧前进的时间比例
 	if time_running and day_length_seconds > 0.01:
 		var step: float = (delta * time_scale) / day_length_seconds
-		var next_time: float = fposmod(time_of_day + step, 1.0)
+		var next_time: float = fposmod(time_of_day + step, 1.0)  # 0~1 循环
 		if _last_time_of_day >= 0.0:
-			# 以“正午（0.5）穿越点”作为“新的一天”计数点：
+			# 以”正午（0.5）穿越点”作为”新的一天”计数点：
 			# - 午夜时月亮通常可见且接近正上空，若在此刻换月相会明显穿帮
-			# - 正午时月亮不可见，把月相推进放到这里可以从根因上避免“抬头看月亮突然变相”
+			# - 正午时月亮不可见，把月相推进放到这里可以从根因上避免”抬头看月亮突然变相”
 			if _last_time_of_day < 0.5 and (next_time >= 0.5 or next_time < _last_time_of_day):
-				_day_count += 1
+				_day_count += 1  # 进入新的一天 → 月相 +1
 		time_of_day = next_time
 
+	# 应用所有环境参数：天空色/灯光/环境光/天体/云/体素亮度
 	_apply_all(delta)
 	_last_time_of_day = time_of_day
 
@@ -270,46 +273,55 @@ func _ensure_celestials() -> void:
 		_apply_sprite_material(_moon_sprite, moon_phase_textures[0], moon_additive_blend)
 
 
+## 创建多层云系统 — 使用 PlaneMesh + ShaderMaterial（clouds.gdshader）
+## 设计：多层水平平面叠加 → 渲染时从纹理R通道采样→alpha混合→模拟体积感
 func _ensure_clouds() -> void:
 	if not clouds_enabled:
 		if _clouds_root != null and is_instance_valid(_clouds_root):
 			_clouds_root.visible = false
 		return
 
+	# 加载默认云纹理（灰度图，R通道=云密度）
 	if clouds_texture == null:
 		clouds_texture = load("res://resources/textures/environment/clouds.png")
 
+	# 创建云层根节点（一次性）
 	if _clouds_root == null:
 		_clouds_root = Node3D.new()
 		_clouds_root.name = "Clouds"
 		_clouds_root.visible = true
 		add_child(_clouds_root)
 
+	# 创建ShaderMaterial（一次性）
 	if _clouds_mat == null:
 		_clouds_mat = ShaderMaterial.new()
 		_clouds_mat.shader = load("res://shaders/clouds.gdshader") as Shader
-	_clouds_planes.clear()
+	_clouds_planes.clear()  # 重建所有层
 
-	var r: float = max(10.0, clouds_radius)
-	var layer_count: int = clampi(clouds_layers, 1, 12)
+	var r: float = max(10.0, clouds_radius)  # 平面半径
+	var layer_count: int = clampi(clouds_layers, 1, 12)  # 层数
 	var thickness: float = max(0.0, clouds_thickness)
+	# 层间距：总厚度 / (层数-1)，单层时step_y=0
 	var step_y: float = 0.0 if layer_count <= 1 else (thickness / float(layer_count - 1))
 
 	for i in range(layer_count):
 		var m: MeshInstance3D = MeshInstance3D.new()
 		m.name = "CloudLayer" + str(i)
-		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # 云不投阴影
 		m.visible = true
+		# 大平面（直径 = 2×半径），足够覆盖玩家视野
 		var plane: PlaneMesh = PlaneMesh.new()
 		plane.size = Vector2(r * 2.0, r * 2.0)
 		m.mesh = plane
 		m.material_override = _clouds_mat
+		# 各层在Y方向偏移，形成厚度感
 		m.position = Vector3(0.0, step_y * float(i), 0.0)
 		_clouds_root.add_child(m)
 		_clouds_planes.append(m)
 
 	_clouds_root.visible = true
 
+	# 设置Shader参数
 	if _clouds_mat != null:
 		if clouds_texture != null:
 			_clouds_mat.set_shader_parameter("clouds_tex", clouds_texture)
@@ -317,6 +329,7 @@ func _ensure_clouds() -> void:
 		_clouds_mat.set_shader_parameter("base_opacity", clampf(clouds_opacity, 0.0, 1.0))
 
 
+## 每帧更新云层的位置（跟随相机）、颜色（昼夜过渡）、UV偏移（飘动动画）
 func _apply_clouds(delta: float) -> void:
 	if _clouds_root == null or _clouds_mat == null:
 		return
@@ -331,73 +344,92 @@ func _apply_clouds(delta: float) -> void:
 		return
 
 	_clouds_root.visible = true
-	_clouds_time += max(0.0, delta)
+	_clouds_time += max(0.0, delta)  # 累计时间（用于UV偏移计算云飘动）
 
 	var cam_pos: Vector3 = _camera.global_position
 
+	# 动态调整相机远裁剪面：确保云平面始终在相机可视范围内
+	# 需要距离 = sqrt(水平半径² + 垂直距离²) + 安全余量
 	var dy: float = absf(clouds_height - cam_pos.y)
 	var required_far: float = sqrt(clouds_radius * clouds_radius + dy * dy) + 20.0
 	if _camera.far < required_far:
 		_camera.far = required_far
 
+	# 云根节点跟随相机水平移动，固定在 cloud_height 高度（垂直不跟随）
 	_clouds_root.global_position = Vector3(cam_pos.x, clouds_height, cam_pos.z)
 
+	# 昼夜颜色过渡
 	var sun_height: float = _get_sun_height()
 	var night_t: float = _night_factor(sun_height)
-	var c: Color = clouds_day_color.lerp(clouds_night_color, night_t)
+	var c: Color = clouds_day_color.lerp(clouds_night_color, night_t)  # 白天白 → 夜晚偏暗蓝
+	# 夜晚透明度倍率：night_t=1 → a_mul=clouds_night_alpha_mul（更透明）
 	var a_mul: float = lerpf(1.0, clampf(clouds_night_alpha_mul, 0.0, 1.0), night_t)
 
 	_clouds_mat.set_shader_parameter("clouds_color", Vector4(c.r, c.g, c.b, 1.0))
 	var layer_count: int = clampi(clouds_layers, 1, 12)
 	var base_op: float = clampf(clouds_opacity, 0.0, 1.0)
 	_clouds_mat.set_shader_parameter("base_opacity", base_op)
+	# 每层透明度 = 总透明度 × alpha倍率 / 层数（多层均分，保持总体观感一致）
 	_clouds_mat.set_shader_parameter("alpha_mul", a_mul / max(1.0, float(layer_count)))
 
+	# UV偏移 = 速度(世界单位/秒) × 时间 / tile世界尺寸 → 归一化到[0,1]空间
 	var off: Vector2 = clouds_speed_world * _clouds_time / max(1.0, clouds_tile_world_size)
 	_clouds_mat.set_shader_parameter("uv_offset", off)
 
 
+## 统一调度所有环境参数的更新（每帧调用）
 func _apply_all(_delta: float) -> void:
 	if _sky_mat != null:
-		_apply_sky_colors()
-	_apply_environment_ambient(_delta)
-	_apply_celestial_sprites()
-	_apply_celestial_lights()
-	_apply_voxel_sky_brightness()
-	_apply_clouds(_delta)
+		_apply_sky_colors()          # ProceduralSkyMaterial 天空色
+	_apply_environment_ambient(_delta)  # 环境光（含平滑过渡）
+	_apply_celestial_sprites()       # 太阳/月亮 Sprite3D 位置与贴图
+	_apply_celestial_lights()        # 太阳/月亮方向光强度与颜色
+	_apply_voxel_sky_brightness()    # 同步天空亮度到体素 ShaderMaterial
+	_apply_clouds(_delta)            # 云层位置/颜色/透明度
 
 
+## 将天空亮度同步给VoxelWorld → 转发到所有Chunk共用的ShaderMaterial
+## 影响体素渲染的光照计算（sky_brightness uniform）
 func _apply_voxel_sky_brightness() -> void:
 	if _voxel_world == null or not is_instance_valid(_voxel_world):
 		return
 	if not _voxel_world.has_method("set_sky_brightness"):
 		return
 
+	# 太阳高度 → 亮度因子：smoothstep(0, twilight_width, sun_height)
+	# sun_height < 0（夜晚）→ factor≈0 → brightness≈0.12
+	# sun_height > twilight_width（白天）→ factor≈1 → brightness=1.0
 	var sun_height: float = _get_sun_height()
 	var w: float = max(0.001, twilight_width)
 	var sun_factor: float = _smoothstep(0.0, w, sun_height)
-	var sky_brightness: float = lerpf(0.12, 1.0, sun_factor)
+	var sky_brightness: float = lerpf(0.12, 1.0, sun_factor)  # 夜晚最低0.12，白天最高1.0
 	_voxel_world.call("set_sky_brightness", sky_brightness)
 
 
+## 更新 ProceduralSkyMaterial 的天空颜色（顶色→地平线色→地面色）
+## 白天：蓝顶(#78A7FF) + 浅蓝底(#C0D8FF) → 夜晚：深黑(#0F0F0F)
 func _apply_sky_colors() -> void:
+	# 基础色（白天），夜晚使用 night_color 兜底
 	var base_top: Color = night_color
 	var base_bottom: Color = night_color
 
-	if dimension == 0:
-		base_top = overworld_sky_top_day
-		base_bottom = overworld_sky_bottom_day
+	if dimension == 0:  # 主世界
+		base_top = overworld_sky_top_day       # 上半天空蓝
+		base_bottom = overworld_sky_bottom_day  # 下半天空浅蓝
 
 	var sun_height: float = _get_sun_height()
+	# night_t: sun_height > twilight_width → 0(白天), sun_height < -twilight_width → 1(夜晚)
 	var night_t: float = _night_factor(sun_height)
 
+	# 在白天色和夜晚色之间按 night_t 线性插值
 	var top: Color = base_top.lerp(night_color, night_t)
 	var bottom: Color = base_bottom.lerp(night_color, night_t)
 
-	_sky_mat.sky_top_color = top
-	_sky_mat.sky_horizon_color = top.lerp(bottom, 0.65)
-	_sky_mat.ground_horizon_color = bottom
-	_sky_mat.ground_bottom_color = bottom.lerp(night_color, 0.35 + 0.65 * night_t)
+	# 设置ProceduralSkyMaterial的四个颜色参数
+	_sky_mat.sky_top_color = top                        # 正上方天空
+	_sky_mat.sky_horizon_color = top.lerp(bottom, 0.65) # 地平线（65%靠近底色的位置）
+	_sky_mat.ground_horizon_color = bottom              # 地面附近
+	_sky_mat.ground_bottom_color = bottom.lerp(night_color, 0.35 + 0.65 * night_t)  # 最低处更暗
 
 
 func _ensure_celestial_lights() -> void:
@@ -415,6 +447,7 @@ func _ensure_celestial_lights() -> void:
 		add_child(_moon_light)
 
 
+## 更新太阳/月亮方向光（DirectionalLight3D）的强度、颜色、方向和阴影
 func _apply_celestial_lights() -> void:
 	if not use_celestial_lights:
 		return
@@ -423,35 +456,46 @@ func _apply_celestial_lights() -> void:
 	if _sun_light == null or _moon_light == null:
 		return
 
+	# 太阳方向（轨道模型：绕Y轴倾斜 orbit_yaw_deg 的旋转平面）
 	var sun_dir: Vector3 = _get_sun_dir()
-	var sun_height: float = sun_dir.y
+	var sun_height: float = sun_dir.y  # sin(相位) → >0=白天, <0=夜晚
 
 	var w: float = max(0.001, twilight_width)
+	# 太阳因子：sun_height > w → 1（完全白天），sun_height < 0 → 0（完全黑夜）
 	var sun_factor: float = _smoothstep(0.0, w, sun_height)
+	# 月亮因子：sun_height < -w → 1（完全黑夜），sun_height > 0 → 0（完全白天）
 	var moon_factor: float = _smoothstep(0.0, w, -sun_height)
+	# 黄昏因子：太阳接近地平线时 → 1（用于暖色调混合）
 	var twilight_t: float = clampf(1.0 - absf(sun_height) / w, 0.0, 1.0)
 
+	# 太阳光能量 = 白天强度 × 太阳可见度
 	var sun_energy: float = day_light_energy * sun_factor
+	# 月光能量 = 夜晚强度 × 月亮可见度
 	var moon_energy: float = night_light_energy * moon_factor
 
+	# 黄昏/黎明时太阳光偏暖（橙黄色）
 	var sun_color: Color = day_light_color.lerp(twilight_light_color, twilight_t)
 	var moon_color: Color = night_light_color
 
+	# 太阳方向光设置
 	_sun_light.light_energy = sun_energy
 	_sun_light.light_color = sun_color
+	# 只在太阳可见且有足够能量时开启阴影
 	_sun_light.shadow_enabled = shadows_enabled and sun_cast_shadows and sun_energy > 0.01
 	_sun_light.directional_shadow_max_distance = max(5.0, shadow_max_distance)
 	_sun_light.shadow_bias = shadow_bias
 	_sun_light.shadow_normal_bias = shadow_normal_bias
+	# 光照方向 = 从太阳Sprite指向玩家的反方向（保证平行光方向与视觉一致）
 	var sun_gt: Transform3D = _sun_light.global_transform
 	var sun_ray_dir: Vector3 = -sun_dir
 	if _camera != null and is_instance_valid(_camera) and _sun_sprite != null and is_instance_valid(_sun_sprite):
 		var to_sun: Vector3 = (_sun_sprite.global_position - _camera.global_position).normalized()
 		if to_sun.length() > 0.00001:
 			sun_ray_dir = -to_sun
-	sun_gt.basis = _basis_from_ray_dir(sun_ray_dir)
+	sun_gt.basis = _basis_from_ray_dir(sun_ray_dir)  # 用光线方向构建基向量
 	_sun_light.global_transform = sun_gt
 
+	# 月亮方向光设置（与太阳对称，方向相反）
 	_moon_light.light_energy = moon_energy
 	_moon_light.light_color = moon_color
 	_moon_light.shadow_enabled = shadows_enabled and moon_cast_shadows and moon_energy > 0.01
@@ -459,7 +503,7 @@ func _apply_celestial_lights() -> void:
 	_moon_light.shadow_bias = shadow_bias
 	_moon_light.shadow_normal_bias = shadow_normal_bias
 	var moon_gt: Transform3D = _moon_light.global_transform
-	var moon_ray_dir: Vector3 = sun_dir
+	var moon_ray_dir: Vector3 = sun_dir  # 月亮方向 = 太阳反方向
 	if _camera != null and is_instance_valid(_camera) and _moon_sprite != null and is_instance_valid(_moon_sprite):
 		var to_moon: Vector3 = (_moon_sprite.global_position - _camera.global_position).normalized()
 		if to_moon.length() > 0.00001:
@@ -492,27 +536,35 @@ func _basis_from_ray_dir(ray_dir: Vector3) -> Basis:
 	return b
 
 
+## 更新 WorldEnvironment 环境光（Ambient Light）的颜色与强度
+## 用途：控制阴影区域的基础亮度，避免暗面全黑
+## 平滑：能量变化使用指数平滑，防止进出洞口/昼夜切换时"啪"一下跳变
 func _apply_environment_ambient(delta: float) -> void:
 	if _world_env == null or _world_env.environment == null:
 		return
 	var env: Environment = _world_env.environment
 
+	# 使用固定颜色方式（非天空采样），便于精确控制
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 
 	var sun_height: float = _get_sun_height()
 	var night_t: float = _night_factor(sun_height)
 
+	# 在白天/夜晚环境光之间按 night_t 插值
 	var base_energy: float = lerpf(ambient_day_energy, ambient_night_energy, night_t)
 	var base_color: Color = ambient_day_color.lerp(ambient_night_color, night_t)
 	var energy: float = base_energy
 
+	# 指数平滑：当前值 = lerp(当前值, 目标值, 1 - exp(-speed * delta))
+	# 当 speed 较大时，变化快；较小时，变化慢（smooth in/out）
 	if _ambient_energy_current < 0.0:
-		_ambient_energy_current = energy
+		_ambient_energy_current = energy  # 首次初始化
 	else:
 		var speed: float = max(0.0, ambient_smooth_speed)
 		if speed <= 0.00001:
-			_ambient_energy_current = energy
+			_ambient_energy_current = energy  # 无平滑
 		else:
+			# k = 1 - e^(-speed * delta)，delta越大/速度越快 → k越接近1
 			var k: float = 1.0 - exp(-speed * max(0.0, delta))
 			_ambient_energy_current = lerpf(_ambient_energy_current, energy, k)
 
@@ -520,6 +572,8 @@ func _apply_environment_ambient(delta: float) -> void:
 	env.ambient_light_energy = _ambient_energy_current
 
 
+## 更新太阳/月亮 Sprite3D 的位置、可见性和月相贴图
+## 太阳/月亮始终在相机前方 celestial_distance 距离处（跟随相机），实现"无限远"视觉效果
 func _apply_celestial_sprites() -> void:
 	if _camera == null:
 		_camera = get_viewport().get_camera_3d()
@@ -527,21 +581,27 @@ func _apply_celestial_sprites() -> void:
 		return
 
 	var cam_pos: Vector3 = _camera.global_position
-	var dir: Vector3 = _get_sun_dir()
+	var dir: Vector3 = _get_sun_dir()  # 太阳在轨道上的方向
 
+	# 太阳 Sprite3D
 	if _sun_sprite != null:
+		# 位置 = 相机位置 + 太阳方向 × 固定距离（始终在相机前方远处）
 		_sun_sprite.global_position = cam_pos + dir * celestial_distance
+		# 像素大小 = 世界直径 / 纹理像素数（保证屏幕上的视觉大小不变）
 		_apply_sprite_size(_sun_sprite, _sun_sprite.texture, sun_world_diameter, sun_scale)
+		# 太阳在地平线下方超过阈值时隐藏（防止看到地平线下方的太阳）
 		_sun_sprite.visible = _get_sun_height() > -0.12
 
+	# 月亮 Sprite3D（方向与太阳相反）
 	if _moon_sprite != null:
 		_moon_sprite.global_position = cam_pos - dir * celestial_distance
-		_moon_sprite.visible = _get_sun_height() < 0.12
+		_moon_sprite.visible = _get_sun_height() < 0.12  # 太阳低于地平线时可见
 
+		# 月相贴图：每天换一张（8张循环），正午切换防止穿帮
 		var moon_tex: Texture2D = _get_moon_phase_texture()
 		if moon_tex != null:
 			if _moon_sprite.texture != moon_tex:
-				_apply_sprite_material(_moon_sprite, moon_tex, moon_additive_blend)
+				_apply_sprite_material(_moon_sprite, moon_tex, moon_additive_blend)  # 重新应用材质
 			_apply_sprite_size(_moon_sprite, moon_tex, moon_world_diameter, moon_scale)
 
 

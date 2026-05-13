@@ -81,20 +81,23 @@ func _ensure_voxel_buffer() -> void:
 	if _columns.size() != chunk_size * chunk_size:
 		_initialize_voxels()
 
+## 初始化所有列为空字典，并重置辅助数组
+## _MIN_I32 作为哨兵值表示"该列尚无体素"
 func _initialize_voxels() -> void:
 	_columns.clear()
-	_columns.resize(chunk_size * chunk_size)
+	_columns.resize(chunk_size * chunk_size)  # 256列 (16×16)
 	for i in range(_columns.size()):
-		_columns[i] = {}
+		_columns[i] = {}  # 每列初始化为空字典
+	# 辅助数组：每列的最高/最低/最高遮挡体素的Y坐标
 	_col_top_y.resize(chunk_size * chunk_size)
 	_col_bottom_y.resize(chunk_size * chunk_size)
 	_col_top_occluder_y.resize(chunk_size * chunk_size)
 	for i in range(_col_top_y.size()):
-		_col_top_y[i] = _MIN_I32
+		_col_top_y[i] = _MIN_I32  # _MIN_I32 = 哨兵值，表示"该列无体素"
 		_col_bottom_y[i] = _MIN_I32
 		_col_top_occluder_y[i] = _MIN_I32
 	_min_y = 0
-	_max_y = -1
+	_max_y = -1  # -1 表示"空Chunk"（max_y < min_y → rebuild_mesh 直接返回）
 
 func _col_index(x: int, z: int) -> int:
 	return x + z * chunk_size
@@ -103,68 +106,80 @@ func is_in_bounds(x: int, _y: int, z: int) -> bool:
 	return x >= 0 and x < chunk_size and z >= 0 and z < chunk_size
 
 func get_voxel_local(x: int, y: int, z: int) -> int:
-	_ensure_voxel_buffer()
-	if not is_in_bounds(x, y, z):
+	_ensure_voxel_buffer()  # 防御：若尚未初始化则先初始化
+	if not is_in_bounds(x, y, z):  # XZ越界 → 返回空气
 		return VoxelTypes.VoxelType.AIR
-	var col: Dictionary = _columns[_col_index(x, z)]
-	return int(col.get(y, VoxelTypes.VoxelType.AIR))
+	var col: Dictionary = _columns[_col_index(x, z)]  # 取出该列字典
+	return int(col.get(y, VoxelTypes.VoxelType.AIR))  # 查y层，默认AIR
 
 func set_voxel_local(x: int, y: int, z: int, voxel_type: int) -> void:
-	_ensure_voxel_buffer()
-	if not is_in_bounds(x, y, z):
+	_ensure_voxel_buffer()  # 防御：若尚未初始化则先初始化
+	if not is_in_bounds(x, y, z):  # XZ越界 → 丢弃（不应发生）
 		return
 	var idx: int = _col_index(x, z)
 	var col: Dictionary = _columns[idx]
 	if voxel_type == VoxelTypes.VoxelType.AIR:
-		if col.has(y):
+		# === 删除体素（设为空气） ===
+		if col.has(y):  # 该y位置确实有方块才需要处理
 			var old_type: int = int(col.get(y, VoxelTypes.VoxelType.AIR))
-			col.erase(y)
+			col.erase(y)  # 从字典中移除该条目
+			# 若删掉的是该列最高/最低体素 → 重新扫描该列
 			if _col_top_y[idx] == y or _col_bottom_y[idx] == y:
 				_recompute_column_minmax(idx, col)
+			# 若删掉的是该列最高遮挡体素 → 重新计算遮挡顶
 			if BlockRegistryScript.occludes_faces(old_type) and _col_top_occluder_y[idx] == y:
 				_recompute_column_occluder_top(idx, col)
+			# 若删掉的是全局极值 → 重新扫描整个Chunk
 			if _max_y == y or _min_y == y:
 				_recompute_chunk_minmax()
 	else:
-		col[y] = voxel_type
+		# === 添加体素 ===
+		col[y] = voxel_type  # 写入字典
+		# 更新该列最高体素Y
 		if _col_top_y[idx] == _MIN_I32 or y > _col_top_y[idx]:
 			_col_top_y[idx] = y
+		# 更新该列最低体素Y
 		if _col_bottom_y[idx] == _MIN_I32 or y < _col_bottom_y[idx]:
 			_col_bottom_y[idx] = y
+		# 若是遮挡体素 → 更新该列最高遮挡体素Y
 		if BlockRegistryScript.occludes_faces(voxel_type):
 			if _col_top_occluder_y[idx] == _MIN_I32 or y > _col_top_occluder_y[idx]:
 				_col_top_occluder_y[idx] = y
+		# 更新Chunk全局Y范围（用于 rebuild_mesh 的空区块快速跳过）
 		if _max_y < 0 or y > _max_y:
 			_max_y = y
 		if _max_y < 0 or y < _min_y:
 			_min_y = y
-	_columns[idx] = col
+	_columns[idx] = col  # 显式写回（Dictionary为引用类型，此处保证安全）
 
 
+## 返回某列的最高体素Y。无体素时返回 _MIN_I32
 func get_column_top_y(x: int, z: int) -> int:
 	_ensure_voxel_buffer()
 	if not is_in_bounds(x, 0, z):
 		return _MIN_I32
 	return int(_col_top_y[_col_index(x, z)])
 
+## 返回某列的最高遮挡体素Y。用于天光"列顶直射"判断
 func get_column_top_occluder_y(x: int, z: int) -> int:
 	_ensure_voxel_buffer()
 	if not is_in_bounds(x, 0, z):
 		return _MIN_I32
 	return int(_col_top_occluder_y[_col_index(x, z)])
 
+## 重新扫描某列，找出最高遮挡体素（用于体素删除后更新）
 func _recompute_column_occluder_top(idx: int, col: Dictionary) -> void:
 	var top: int = _MIN_I32
 	for k in col.keys():
 		var yy: int = int(k)
 		var vt: int = int(col[k])
-		if not BlockRegistryScript.occludes_faces(vt):
+		if not BlockRegistryScript.occludes_faces(vt):  # 树叶/玻璃等不遮挡
 			continue
-		if top == _MIN_I32 or yy > top:
+		if top == _MIN_I32 or yy > top:  # 找最高
 			top = yy
 	_col_top_occluder_y[idx] = top
 
-
+## 重新扫描某列的最高和最低体素Y（删除体素后调用）
 func _recompute_column_minmax(idx: int, col: Dictionary) -> void:
 	var top: int = _MIN_I32
 	var bottom: int = _MIN_I32
@@ -177,18 +192,18 @@ func _recompute_column_minmax(idx: int, col: Dictionary) -> void:
 	_col_top_y[idx] = top
 	_col_bottom_y[idx] = bottom
 
-
+## 遍历所有256列，重新计算整个Chunk的全局Y范围
 func _recompute_chunk_minmax() -> void:
 	var top: int = _MIN_I32
 	var bottom: int = _MIN_I32
-	for i in range(_col_top_y.size()):
+	for i in range(_col_top_y.size()):  # 遍历256列
 		var ct: int = int(_col_top_y[i])
 		if ct != _MIN_I32 and (top == _MIN_I32 or ct > top):
 			top = ct
 		var cb: int = int(_col_bottom_y[i])
 		if cb != _MIN_I32 and (bottom == _MIN_I32 or cb < bottom):
 			bottom = cb
-	if top == _MIN_I32:
+	if top == _MIN_I32:  # 全空Chunk → max_y < min_y → rebuild_mesh 时直接跳过
 		_min_y = 0
 		_max_y = -1
 	else:
@@ -484,21 +499,25 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	mesh = arr_mesh
 	_update_collision_from_mesh()
 
+## 获取某世界坐标的天光值(0~15)。优先查本Chunk缓存，越界则回退到 _skylight_direct 查询
 func _sample_skylight_cached(global_voxel: Vector3i) -> int:
+	# 缓存未就绪 → 回退到直接查询（非BFS的二值天光）
 	if not _skylight_cache_valid:
 		if _skylight_direct.is_null():
-			return 15
+			return 15  # 无查询函数 → 默认最亮
 		return int(_skylight_direct.call(global_voxel))
-	var local: Vector3i = global_voxel - chunk_coord * chunk_size
+	var local: Vector3i = global_voxel - chunk_coord * chunk_size  # 世界→局部
+	# XZ越界（体素不在本Chunk）→ 回退到直接查询
 	if local.x < 0 or local.x >= chunk_size or local.z < 0 or local.z >= chunk_size:
 		if _skylight_direct.is_null():
 			return 15
 		return int(_skylight_direct.call(global_voxel))
+	# Y超出缓存范围(0~15) → 回退
 	if local.y < 0 or local.y >= chunk_size:
 		if _skylight_direct.is_null():
 			return 15
 		return int(_skylight_direct.call(global_voxel))
-	var idx: int = local.x + chunk_size * (local.z + chunk_size * local.y)
+	var idx: int = local.x + chunk_size * (local.z + chunk_size * local.y)  # 3D→1D索引
 	if idx < 0 or idx >= _skylight_cache.size():
 		return 0
 	return int(_skylight_cache[idx])
@@ -506,6 +525,7 @@ func _sample_skylight_cached(global_voxel: Vector3i) -> int:
 func is_skylight_cache_valid() -> bool:
 	return _skylight_cache_valid
 
+## 由跨区块查询调用：取本Chunk内某格的天光值（仅缓存有效时）
 func get_skylight_local(x: int, y: int, z: int) -> int:
 	if not _skylight_cache_valid:
 		return 0
@@ -516,9 +536,11 @@ func get_skylight_local(x: int, y: int, z: int) -> int:
 		return 0
 	return int(_skylight_cache[idx])
 
+## 体素是否透光？空气/树叶/玻璃=透光，石头/泥土等=不透光
 func _is_light_passable(voxel_type: int) -> bool:
 	if voxel_type == VoxelTypes.VoxelType.AIR:
 		return true
+	# 不遮挡面的方块（树叶occludes_faces=false，玻璃=false）→透光
 	return not BlockRegistryScript.occludes_faces(voxel_type)
 
 ## BFS天光传播算法（3阶段）：
@@ -701,32 +723,36 @@ func _try_add_face(
 
 
 func _fract(v: float) -> float:
-	return v - floor(v)
+	return v - floor(v)  # 取小数部分：3.7 → 0.7, -1.2 → 0.8
 
-
+## 二维哈希函数：输入坐标 → 输出 [0,1) 伪随机值
+## 原理：点积 + sin + 大数乘法 → 高频振荡 → fract 取小数
 func _hash12(p: Vector2) -> float:
 	return _fract(sin(p.dot(Vector2(127.1, 311.7))) * 43758.5453)
 
-
+## 二维值噪声：在4个格点哈希值之间做平滑双线性插值
 func _noise2(p: Vector2) -> float:
-	var i: Vector2 = Vector2(floor(p.x), floor(p.y))
-	var f: Vector2 = Vector2(p.x - i.x, p.y - i.y)
-	var a: float = _hash12(i)
-	var b: float = _hash12(i + Vector2(1.0, 0.0))
-	var c: float = _hash12(i + Vector2(0.0, 1.0))
-	var d: float = _hash12(i + Vector2(1.0, 1.0))
+	var i: Vector2 = Vector2(floor(p.x), floor(p.y))  # 格子左下角整数坐标
+	var f: Vector2 = Vector2(p.x - i.x, p.y - i.y)    # 格内小数偏移
+	var a: float = _hash12(i)                           # (0,0)格点值
+	var b: float = _hash12(i + Vector2(1.0, 0.0))      # (1,0)格点值
+	var c: float = _hash12(i + Vector2(0.0, 1.0))      # (0,1)格点值
+	var d: float = _hash12(i + Vector2(1.0, 1.0))      # (1,1)格点值
+	# Hermite平滑: 3t²-2t³ → 格点间过渡连续且可导
 	var u: Vector2 = f * f * (Vector2.ONE * 3.0 - 2.0 * f)
-	return lerpf(lerpf(a, b, u.x), lerpf(c, d, u.x), u.y)
+	return lerpf(lerpf(a, b, u.x), lerpf(c, d, u.x), u.y)  # X方向插值再Y方向
 
-
+## 根据世界体素坐标计算群系ID
+## 返回0=平原/1=森林/2=干旱（仅3种，沙漠(tint_mode=0的沙子)由VoxelWorld的4类群系判断）
 func _biome_id_at(gx: int, gz: int) -> int:
-	# 说明：用连续噪声生成群系，得到 0/1/2（平原/森林/干旱）。
-	# 这里以“世界坐标（米）”采样，确保 voxel_scale 改变时群系视觉尺度仍然符合预期。
+	# 世界坐标（米）= 体素格坐标 × voxel_scale
 	var wx: float = gx * voxel_scale
 	var wz: float = gz * voxel_scale
+	# 噪声采样 + 种子偏移 → [0, 1) → ×3 → 0/1/2
 	var n: float = _noise2(Vector2(wx, wz) * biome_map_scale + Vector2(float(biome_seed) * 0.13, float(biome_seed) * -0.37))
 	return floori(clampf(n, 0.0, 0.999) * 3.0)
 
+## 面的法线方向（单位向量）
 func _face_normal(face: int) -> Vector3:
 	match face:
 		VoxelTypes.Face.POS_X:
@@ -742,7 +768,7 @@ func _face_normal(face: int) -> Vector3:
 		VoxelTypes.Face.NEG_Z:
 			return Vector3(0, 0, -1)
 		_:
-			return Vector3.UP
+			return Vector3.UP  # 兜底
 
 func _tile_uvs(tile: Vector2i) -> Array[Vector2]:
 	var cols: float = max(1.0, atlas_columns * 1.0)
@@ -804,37 +830,43 @@ func _face_uv_local(face: int, corner: Vector3) -> Vector2:
 		_:
 			return Vector2.ZERO
 
+## 惰性创建 StaticBody3D + CollisionShape3D 子节点（首次需要碰撞时创建）
 func _ensure_collision_nodes() -> void:
 	if _static_body == null:
 		_static_body = StaticBody3D.new()
 		_static_body.name = "StaticBody3D"
-		add_child(_static_body)
-
+		add_child(_static_body)  # 挂到Chunk节点下
 	if _collision_shape == null:
 		_collision_shape = CollisionShape3D.new()
 		_collision_shape.name = "CollisionShape3D"
-		_static_body.add_child(_collision_shape)
+		_static_body.add_child(_collision_shape)  # 挂到StaticBody3D下
 
+## 从当前网格生成三角网格碰撞体
 func _update_collision_from_mesh() -> void:
+	# 碰撞已禁用 → 清空碰撞体形状，关闭碰撞层
 	if not collision_enabled:
 		if _collision_shape != null:
 			_collision_shape.shape = null
 		if _static_body != null:
-			_static_body.collision_layer = 0
+			_static_body.collision_layer = 0  # 不参与碰撞检测
 			_static_body.collision_mask = 0
 		return
 
 	_ensure_collision_nodes()
 
+	# 无网格（空Chunk）→ 清空碰撞
 	if mesh == null:
 		_collision_shape.shape = null
 		_static_body.collision_layer = 0
 		_static_body.collision_mask = 0
 		return
 
+	# 从ArrayMesh生成ConcavePolygonShape3D（三角网格凹碰撞体）
 	var shape: Shape3D = mesh.create_trimesh_shape()
 	if shape is ConcavePolygonShape3D:
+		# 关键：启用双面碰撞，防止从"内部"方向穿透方块
 		(shape as ConcavePolygonShape3D).backface_collision = true
 	_collision_shape.shape = shape
+	# 碰撞层1 = 地形，碰撞掩码2 = 与玩家/实体碰撞
 	_static_body.collision_layer = 1
 	_static_body.collision_mask = 2

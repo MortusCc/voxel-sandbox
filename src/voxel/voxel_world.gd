@@ -145,19 +145,22 @@ func _ensure_initial_chunks() -> void:
 	_plan_chunk_streaming()
 
 
+## 规划区块流式加载/卸载 — 以玩家为中心，load_radius内加入创建队列，unload_radius外加入卸载队列
 func _plan_chunk_streaming() -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = get_node_or_null(player_path) as Node3D
 	if _player == null:
 		return
 
+	# 玩家当前所在的体素格坐标 → 区块坐标
 	var p: Vector3 = _player.global_position / max(0.0001, voxel_scale)
 	var pv: Vector3i = Vector3i(floori(p.x), floori(p.y), floori(p.z))
 	var center: Vector3i = _voxel_to_chunk_coord(pv)
 
-	var load_r: int = max(0, chunk_load_radius)
-	var unload_r: int = max(load_r, chunk_unload_radius)
+	var load_r: int = max(0, chunk_load_radius)       # 加载半径（默认2 → 5×5=25个区块）
+	var unload_r: int = max(load_r, chunk_unload_radius) # 卸载半径（默认3 → 7×7内部保留）
 
+	# 将加载半径内不在队列中的区块加入待创建列表
 	for cz in range(center.z - load_r, center.z + load_r + 1):
 		for cx in range(center.x - load_r, center.x + load_r + 1):
 			var cc: Vector3i = Vector3i(cx, 0, cz)
@@ -165,6 +168,7 @@ func _plan_chunk_streaming() -> void:
 				continue
 			_pending_create.push_back(cc)
 
+	# 将卸载半径外的已加载区块加入待卸载列表
 	if chunk_auto_unload and _chunks.size() > 0:
 		for k in _chunks.keys():
 			var cc: Vector3i = k
@@ -173,23 +177,28 @@ func _plan_chunk_streaming() -> void:
 					_pending_unload.append(cc)
 
 
+## 每帧执行有限次数的区块创建/卸载操作（防止一帧内大量操作导致卡顿）
 func _process_chunk_ops() -> void:
-	var ops: int = clampi(max_chunk_ops_per_tick, 1, 8)
+	var ops: int = clampi(max_chunk_ops_per_tick, 1, 8)  # 每tick最多操作次数
 	var did_change: bool = false
 
+	# 优先卸载远处区块（释放内存），再创建新区块
 	while ops > 0 and not _pending_unload.is_empty():
 		var center: Vector3i = _get_player_chunk_center()
+		# 选离玩家最近的待卸载区块（先卸近的？实际上卸载顺序影响不大）
 		var cc: Vector3i = _pop_nearest_chunk(_pending_unload, center)
 		if not _chunks.has(cc):
 			continue
+		# 二次确认：卸载时玩家可能已靠近该区块
 		var unload_r: int = max(max(0, chunk_load_radius), chunk_unload_radius)
 		if abs(cc.x - center.x) <= unload_r and abs(cc.z - center.z) <= unload_r:
-			continue
+			continue  # 又回到加载范围内了，不卸载
 		var ch: VoxelChunk = _chunks.get(cc, null)
 		if ch != null and is_instance_valid(ch):
-			ch.queue_free()
-		_chunks.erase(cc)
+			ch.queue_free()  # 加入Godot删除队列，下帧释放
+		_chunks.erase(cc)  # 从字典中移除
 		did_change = true
+		# 卸载后，相邻区块的边界面可能暴露 → 标记邻居需要重建
 		_mark_chunk_dirty(cc)
 		_mark_chunk_dirty(cc + Vector3i(1, 0, 0))
 		_mark_chunk_dirty(cc + Vector3i(-1, 0, 0))
@@ -197,13 +206,16 @@ func _process_chunk_ops() -> void:
 		_mark_chunk_dirty(cc + Vector3i(0, 0, -1))
 		ops -= 1
 
+	# 创建新区块
 	while ops > 0 and not _pending_create.is_empty():
 		var center: Vector3i = _get_player_chunk_center()
+		# 选离玩家最近的待创建区块（优先创建视野内的）
 		var cc: Vector3i = _pop_nearest_chunk(_pending_create, center)
 		if _chunks.has(cc):
-			continue
-		_create_chunk(cc, true)
+			continue  # 已存在
+		_create_chunk(cc, true)  # fill_terrain=true → 填充地形+树木
 		did_change = true
+		# 新创建的区块可能影响邻居的可见面 → 标记邻居重建
 		_mark_chunk_dirty(cc)
 		_mark_chunk_dirty(cc + Vector3i(1, 0, 0))
 		_mark_chunk_dirty(cc + Vector3i(-1, 0, 0))
@@ -212,20 +224,24 @@ func _process_chunk_ops() -> void:
 		ops -= 1
 
 	if did_change:
-		return
+		return  # 本tick有创建/卸载 → 下个tick再重建网格（错开耗时操作）
 
 
+## 每帧处理有限数量的区块网格重建（最耗时的操作，严格限流）
 func _process_mesh_rebuilds() -> void:
 	var count: int = clampi(max_chunk_mesh_rebuilds_per_tick, 1, 8)
 	var center: Vector3i = _get_player_chunk_center()
-	var cr: int = max(0, collision_chunk_radius)
+	var cr: int = max(0, collision_chunk_radius)  # 碰撞半径（碰撞只在玩家附近区块启用）
 	while count > 0 and not _pending_mesh_rebuild.is_empty():
+		# 优先重建离玩家最近的区块网格
 		var cc: Vector3i = _pop_nearest_chunk(_pending_mesh_rebuild, center)
 		var ch: VoxelChunk = _chunks.get(cc, null)
 		if ch == null:
 			count -= 1
 			continue
+		# 只在玩家附近区块启用碰撞体（远处只渲染，不生成碰撞，节省性能）
 		ch.collision_enabled = (abs(cc.x - center.x) <= cr and abs(cc.z - center.z) <= cr)
+		# rebuild_mesh 内部执行：面剔除 → 顶点/UV/颜色生成 → ArrayMesh → 碰撞更新
 		ch.rebuild_mesh(_sample_voxel_global, Callable(self, "_sample_skylight_global"))
 		count -= 1
 
@@ -422,100 +438,121 @@ func _rebuild_chunks_local(center_chunk: Vector3i, radius_chunks: int) -> void:
 			if ch != null:
 				ch.rebuild_mesh(_sample_voxel_global, Callable(self, "_sample_skylight_global"))
 
+## 为整个区块填充地形 — 噪声高度图 + 群系分层 + 树木生成
 func _fill_chunk_terrain(chunk: VoxelChunk) -> void:
 	if chunk == null:
 		return
 	var cc: Vector3i = chunk.chunk_coord
-	var base: int = clampi(terrain_base_height, 1, chunk_size - 2)
-	var amp: int = clampi(terrain_height_amplitude, 0, chunk_size - 2)
+	var base: int = clampi(terrain_base_height, 1, chunk_size - 2)   # 平均地表高度
+	var amp: int = clampi(terrain_height_amplitude, 0, chunk_size - 2) # 地形起伏幅度
+	# 高度图：记录每个 (x,z) 的地表Y，后续树木生成需要知道树根位置
 	var heightmap: PackedInt32Array = PackedInt32Array()
 	heightmap.resize(chunk_size * chunk_size)
 
 	for z in range(chunk_size):
 		for x in range(chunk_size):
+			# 世界坐标（用于噪声采样，保证跨区块连续）
 			var gx: int = cc.x * chunk_size + x
 			var gz: int = cc.z * chunk_size + z
+			# 群系ID：平原0/森林1/沙漠干旱3（4类群系判断，比Chunk的3类多一个沙漠）
 			var biome_id: int = _biome_id_at(gx, gz)
-			var h: int = base
+			var h: int = base  # 默认平坦高度
 			if terrain_mode == 1 and _height_noise != null:
+				# 采样Simplex噪声 → 起伏值(±amp)
 				var n: float = _height_noise.get_noise_2d(gx, gz)
+				# 不同群系有不同的起伏幅度：平原较平(×0.6)，森林较陡(×1.0)，沙漠中等(×0.75)
 				var biome_amp_mul: float = 0.6 if biome_id == 0 else (1.0 if biome_id == 1 else (0.75 if biome_id == 2 else 0.35))
+				# 地表高度 = base + 噪声值 × (振幅 × 群系系数)
 				h = clampi(base + roundi(n * (amp * biome_amp_mul)), 1, chunk_size - 2)
-			heightmap[x + z * chunk_size] = h
+			heightmap[x + z * chunk_size] = h  # 记录高度用于后续树木生成
+			# 从y=0逐层向上填充，根据深度分层：
 			for y in range(chunk_size):
 				var vt: int = VoxelTypes.VoxelType.AIR
 				if y == 0:
-					vt = VoxelTypes.VoxelType.BEDROCK
+					vt = VoxelTypes.VoxelType.BEDROCK    # 底层基岩
 				elif biome_id == 3:
+					# 沙漠群系：地表是沙子，下方3层石头，再往下全是石头
 					if y < h - 4:
-						vt = VoxelTypes.VoxelType.STONE
+						vt = VoxelTypes.VoxelType.STONE   # 深层石头
 					elif y < h:
-						vt = VoxelTypes.VoxelType.SAND
+						vt = VoxelTypes.VoxelType.SAND    # 沙子层（4格厚）
 				else:
+					# 普通群系：地表草方块→中间泥土→深层石头
 					if y < h - 3:
-						vt = VoxelTypes.VoxelType.STONE
+						vt = VoxelTypes.VoxelType.STONE   # 深层石头
 					elif y < h - 1:
-						vt = VoxelTypes.VoxelType.DIRT
+						vt = VoxelTypes.VoxelType.DIRT    # 泥土层（2格厚）
 					elif y < h:
-						vt = VoxelTypes.VoxelType.GRASS
+						vt = VoxelTypes.VoxelType.GRASS   # 地表草方块（1格厚）
 				chunk.set_voxel_local(x, y, z, vt)
 
+	# 地形填充完成后，在草地表面生成树木
 	_place_trees_for_chunk(chunk, heightmap)
 
+## 在区块内的草地表面按群系权重+概率生成树木
+## 算法：格子候选点（cell-based）确保分布均匀 + 最小间距剔除防止树重叠
 func _place_trees_for_chunk(chunk: VoxelChunk, heightmap: PackedInt32Array) -> void:
 	if chunk == null:
 		return
-	# 说明：按“权重（概率）”生成树，并保留最小间距约束。
-	# - 森林：更高概率
-	# - 干旱：较低概率
-	# - 平原：不生成树
+	# 权重规则：森林(褐)概率0.55，干旱(黄)概率0.22，平原(绿)不生成树
 	#
-	# 为了保证最小间距，并且跨区块也尽量稳定，使用“格子候选点 + 概率筛选”的方式：
-	# - 把世界 XZ 划分为固定大小的 cell，每个 cell 只产生一个候选树点（随机偏移）
+	# 为了保证最小间距并且跨区块也尽量稳定，使用”格子候选点 + 概率筛选”：
+	# - 把世界 XZ 划分为固定大小的 cell（8格），每个 cell 只产生一个候选树点（随机偏移）
 	# - 候选点再按群系权重进行概率筛选
-	# - 通过本区块内的 chosen 列表做最小间距剔除
+	# - 通过本区块内的 chosen 列表做曼哈顿距离最小间距剔除
 	var cc: Vector3i = chunk.chunk_coord
-	var origin_gx: int = cc.x * chunk_size
-	var origin_gz: int = cc.z * chunk_size
+	var origin_gx: int = cc.x * chunk_size  # 本区块在世界体素坐标中的X起点
+	var origin_gz: int = cc.z * chunk_size  # 本区块在世界体素坐标中的Z起点
 
+	# cell_size=8: 把世界分成8×8格子，每格最多一棵树
 	var cell_size: int = 8
-	var min_dist: int = 6
-	var margin: int = 2
+	var min_dist: int = 6   # 树与树之间的最小曼哈顿距离
+	var margin: int = 2     # 树不能太靠近区块边界（防止跨区块超出）
 
+	# 计算本区块覆盖的cell范围
 	var cell_min_x: int = floori(float(origin_gx) / float(cell_size))
 	var cell_min_z: int = floori(float(origin_gz) / float(cell_size))
 	var cell_max_x: int = floori(float(origin_gx + chunk_size - 1) / float(cell_size))
 	var cell_max_z: int = floori(float(origin_gz + chunk_size - 1) / float(cell_size))
 
+	# 记录已在该区块内放置的树的全局坐标（用于最小间距检查）
 	var chosen_global: Array[Vector2i] = []
 
+	# 遍历每个cell，每个cell最多选一个候选树位置
 	for cz in range(cell_min_z, cell_max_z + 1):
 		for cx in range(cell_min_x, cell_max_x + 1):
+			# 两次哈希 → 确定候选树在cell内的随机偏移 (ox, oz)
 			var hx: float = _hash01(Vector2(cx * 31 + terrain_seed * 11, cz * 37 - terrain_seed * 13))
 			var hz: float = _hash01(Vector2(cx * 41 - terrain_seed * 17, cz * 29 + terrain_seed * 19))
+			# offset 在 [margin, cell_size - margin) 范围内（留边距，防止树长在边界上）
 			var ox: int = margin + floori(hx * float(max(1, cell_size - margin * 2)))
 			var oz: int = margin + floori(hz * float(max(1, cell_size - margin * 2)))
+			# 候选位置的全局坐标
 			var gx: int = cx * cell_size + ox
 			var gz: int = cz * cell_size + oz
 
+			# 候选点必须严格在区块内部（距边界至少2格），否则跨区块放置会写越界
 			if gx < origin_gx + 2 or gx >= origin_gx + chunk_size - 2:
 				continue
 			if gz < origin_gz + 2 or gz >= origin_gz + chunk_size - 2:
 				continue
 
+			# 群系权重概率筛选
 			var biome_id: int = _biome_id_at(gx, gz)
 			var chance: float = 0.0
 			if biome_id == 1:
-				chance = 0.55
+				chance = 0.55  # 森林：55%的cell有树
 			elif biome_id == 2:
-				chance = 0.22
+				chance = 0.22  # 干旱：22%的cell有树
 			else:
-				continue
+				continue    # 平原：无树
 
+			# 第三轮哈希 → 概率筛选（与群系权重对比）
 			var hr: float = _hash01(Vector2(gx + terrain_seed * 7, gz - terrain_seed * 11))
 			if hr > chance:
-				continue
+				continue   # 随机值超过概率阈值 → 该cell不生成树
 
+			# 曼哈顿距离最小间距剔除 — 太近的树合并
 			var ok: bool = true
 			for c in chosen_global:
 				if abs(c.x - gx) + abs(c.y - gz) < min_dist:
@@ -524,6 +561,7 @@ func _place_trees_for_chunk(chunk: VoxelChunk, heightmap: PackedInt32Array) -> v
 			if not ok:
 				continue
 
+			# 转为局部坐标，查高度图获取地表Y，生成树
 			var lx: int = gx - origin_gx
 			var lz: int = gz - origin_gz
 			var idx: int = lx + lz * chunk_size
@@ -533,35 +571,43 @@ func _place_trees_for_chunk(chunk: VoxelChunk, heightmap: PackedInt32Array) -> v
 			chosen_global.append(Vector2i(gx, gz))
 
 
+## 在指定位置构建一棵橡树（树干5格 + 树叶3层 + 十字顶）
+## lx/lz=树根局部坐标, ground_h=地表Y（草方块所在层，树从上方一格开始）
 func _build_tree_template(chunk: VoxelChunk, lx: int, lz: int, ground_h: int) -> void:
+	# 树不能太靠近区块边界（至少距边2格），防止树叶越界写入
 	if lx < 2 or lx > chunk_size - 3 or lz < 2 or lz > chunk_size - 3:
 		return
 	if ground_h <= 0 or ground_h >= chunk_size - 2:
 		return
 
+	# y0 = 地表上方第一格（树干起点），草方块在 y=ground_h-1
 	var y0: int = ground_h
-	if y0 + 5 >= chunk_size:
+	if y0 + 5 >= chunk_size:  # 树总高需要5格空间
 		return
 
-	# 生成规则（按你提供的层结构）：
-	# 以 ground_h 作为“地表上方第一格空气”的 y（地表草方块位于 y=ground_h-1）。
-	# 1、2、3、4、5 层：中心为原木（总共 5 格高树干）。
-	# 3、4 层：5×5，除中心外全填树叶。
-	# 5 层：3×3，除中心外全填树叶。
-	# 6 层：宽度为 3 的十字全填树叶。
+	# 层结构（从下往上）：
+	# 第1~5层（y0 ~ y0+4）：中心为原木（5格高树干）
+	# 第3~4层（y0+2, y0+3）：5×5正方形树叶（中心留空给树干）
+	# 第5层（y0+4）：3×3正方形树叶（中心留空）
+	# 第6层（y0+5）：十字形树叶（东西南北各一格）
+
+	# 树干：5格高，仅中心一格
 	for y in range(y0, y0 + 5):
 		chunk.set_voxel_local(lx, y, lz, VoxelTypes.VoxelType.OAK_LOG)
 
+	# 第3、4层：5×5树叶（偏移-2到+2），中心(0,0)已有树干跳过
 	for y in [y0 + 2, y0 + 3]:
 		for oz in range(-2, 3):
 			for ox in range(-2, 3):
-				if ox == 0 and oz == 0:
+				if ox == 0 and oz == 0:  # 中心留给树干
 					continue
 				var ax: int = lx + ox
 				var az: int = lz + oz
+				# 只在空气处放树叶（避免覆盖已有的树干/其他方块）
 				if chunk.get_voxel_local(ax, y, az) == VoxelTypes.VoxelType.AIR:
 					chunk.set_voxel_local(ax, y, az, VoxelTypes.VoxelType.OAK_LEAVES)
 
+	# 第5层：3×3树叶（偏移-1到+1），中心留空
 	var y5: int = y0 + 4
 	for oz in range(-1, 2):
 		for ox in range(-1, 2):
@@ -572,6 +618,7 @@ func _build_tree_template(chunk: VoxelChunk, lx: int, lz: int, ground_h: int) ->
 			if chunk.get_voxel_local(ax, y5, az) == VoxelTypes.VoxelType.AIR:
 				chunk.set_voxel_local(ax, y5, az, VoxelTypes.VoxelType.OAK_LEAVES)
 
+	# 第6层：十字形树冠（仅东西南北+中心各一格叶子）
 	var y6: int = y0 + 5
 	for off in [Vector3i(0, 0, 0), Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]:
 		var ax: int = lx + off.x
@@ -676,45 +723,60 @@ func _set_voxel_global_internal(global_voxel: Vector3i, voxel_type: int, schedul
 		_try_start_falling_sand_at(global_voxel)
 		_try_start_falling_sand_at(global_voxel + Vector3i(0, 1, 0))
 
+## 尝试启动沙子下落 — 检测沙子下方是否为空气，若是则整列打包下落
+## 设计要点：将连续沙柱整体打包为一个FallingBlock实体，
+## 避免多块沙子各自独立下落导致并发争抢位置而丢块。
 func _try_start_falling_sand_at(global_voxel: Vector3i) -> void:
-	if global_voxel.y <= 0:
+	if global_voxel.y <= 0:  # y=0以下不下落（基岩层，防止掉落出世界）
 		return
 	if _sample_voxel_global(global_voxel) != VoxelTypes.VoxelType.SAND:
 		return
+	# 检查下方是否有支撑：下方为空气才需要下落
 	var below: Vector3i = global_voxel + Vector3i(0, -1, 0)
 	if _sample_voxel_global(below) != VoxelTypes.VoxelType.AIR:
-		return
+		return   # 下方有方块支撑，不需要下落
 
+	# 向上扫描，找出连续的沙柱高度 h
+	# 例如：3格沙子叠在一起 → h=3，整柱打包下落
 	var max_h: int = 256
 	var h: int = 1
 	while h < max_h:
 		var p: Vector3i = global_voxel + Vector3i(0, h, 0)
 		if _sample_voxel_global(p) != VoxelTypes.VoxelType.SAND:
-			break
+			break    # 遇到非沙子方块 / 空气 → 沙柱到此为止
 		h += 1
 
+	# 从世界删除整列沙子（用 _suppress_sand_schedule 防止递归触发新的下落检测）
 	_suppress_sand_schedule = true
 	var yi: int = 0
 	while yi < h:
+		# schedule_sand=false → 删除沙子时不触发下落检测（避免无限递归）
 		_set_voxel_global_internal(global_voxel + Vector3i(0, yi, 0), VoxelTypes.VoxelType.AIR, false)
 		yi += 1
 	_suppress_sand_schedule = false
 
+	# 生成单个FallingBlock实体，height_blocks=h（整柱打包）
 	_spawn_falling_block(global_voxel, VoxelTypes.VoxelType.SAND, h)
 
+## 生成一个FallingBlock实体 — 沙柱的物理表示
+## global_voxel: 沙柱最底部的世界体素坐标
+## block_id: 方块类型（SAND=8）
+## height_blocks: 沙柱高度（几格沙叠在一起）
 func _spawn_falling_block(global_voxel: Vector3i, block_id: int, height_blocks: int = 1) -> void:
 	if FallingBlockScene == null:
 		return
-	var n: Node = FallingBlockScene.instantiate()
+	var n: Node = FallingBlockScene.instantiate()  # 实例化 falling_block.tscn
 	if n == null:
 		return
+	# 传递参数给下落实体
 	if n.has_method("set"):
 		n.set("block_id", block_id)
 		n.set("voxel_scale", voxel_scale)
-		n.set("height_blocks", max(1, height_blocks))
-	add_child(n)
+		n.set("height_blocks", max(1, height_blocks))  # 最少1格
+	add_child(n)  # 添加到世界场景树
 	if n is Node3D:
 		var h: int = max(1, height_blocks)
+		# 位置计算：底格中心 + 半柱高偏移 = 整柱居中
 		var cy: float = (global_voxel.y + 0.5) + (h - 1) * 0.5
 		(n as Node3D).global_position = Vector3(global_voxel.x + 0.5, cy, global_voxel.z + 0.5) * voxel_scale
 
@@ -757,26 +819,34 @@ func _floor_div(a: int, b: int) -> int:
 	# floori 可正确处理负数下取整；这里用 / 保持浮点除法，避免使用 float(...) 转换
 	return floori(a / (b * 1.0))
 
+## 3D DDA（Digital Differential Analyzer）体素射线遍历
+## 输入：世界坐标射线 origin + direction + 最大距离
+## 输出：命中信息 {hit, voxel(实体体素坐标), previous(前一格空气坐标), normal(命中面法线), type(方块类型)}
+##
+## 算法思路：
+##   把射线看作在3D单元格网格中逐格前进：
+##   - 计算射线到 x/y/z 三个方向下一个边界的距离（t_max_x/y/z）
+##   - 每一步选择 t_max 最小的方向前进一格
+##   - 第一个命中的实体体素即为拾取目标
+##   - previous = voxel + hit_normal = 放置方块时应使用的前一格空气坐标
 func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> Dictionary:
 	# --- INDEPENDENT DESIGN START ---
-	# 体素拾取：3D DDA（Digital Differential Analyzer）栅格遍历
-	# 思路：
-	# - 将射线看作在 3D 单元格网格中前进
-	# - 每一步跨过 x/y/z 的一个体素边界，进入下一个体素
-	# - 第一个命中的“实体体素”即为拾取目标
 	var dir: Vector3 = direction.normalized()
 	if dir.length() <= 0.00001:
-		return {"hit": false}
+		return {“hit”: false}
 
+	# 将世界坐标转换到体素格坐标空间（除以 voxel_scale）
 	var pos: Vector3 = origin / voxel_scale
+	# 当前所在的体素格坐标（Vector3i = 整数坐标）
 	var voxel: Vector3i = Vector3i(floori(pos.x), floori(pos.y), floori(pos.z))
+	# 射线在各轴的前进方向：+1 / -1 / 0
 	var step_x: int = _sign_int_from_float(dir.x)
 	var step_y: int = _sign_int_from_float(dir.y)
 	var step_z: int = _sign_int_from_float(dir.z)
 
-	# 关键修复：当射线起点恰好落在体素边界（例如 pos.z 是整数）时，
-	# 不同方向（step 正负）会导致 floor() 归属的体素不同，从而出现“转头后放置/命中错一格”的方向性 bug。
-	# 处理规则：如果正好在边界且沿负方向行进，则把起点归属到“边界后方”的体素。
+	# 边界修正：当射线起点恰好落在体素边界（pos分量≈整数）时，
+	# 若沿负方向行进，floor() 会将起点归属到”前方”体素，导致转头后命中错一格。
+	# 解决：负方向 + 恰好边界 → 减去1，让起点归属到”后方”体素
 	var eps: float = 0.000001
 	if absf(pos.x - floorf(pos.x)) < eps and step_x < 0:
 		voxel.x -= 1
@@ -785,6 +855,8 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 	if absf(pos.z - floorf(pos.z)) < eps and step_z < 0:
 		voxel.z -= 1
 
+	# t_delta = 在该轴上每前进一格所需的 t 值
+	# t = 1/|dir|：方向分量越大，每格所需的t越小（沿该方向走得越快）
 	var t_delta_x: float = INF
 	var t_delta_y: float = INF
 	var t_delta_z: float = INF
@@ -795,10 +867,12 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 	if absf(dir.z) > 0.000001:
 		t_delta_z = absf(1.0 / dir.z)
 
+	# 下一个边界的位置（体素格坐标空间）
 	var next_x: float = (voxel.x + (1 if step_x > 0 else 0)) * 1.0
 	var next_y: float = (voxel.y + (1 if step_y > 0 else 0)) * 1.0
 	var next_z: float = (voxel.z + (1 if step_z > 0 else 0)) * 1.0
 
+	# t_max = 从当前位置到下一个边界的 t 值
 	var t_max_x: float = INF
 	var t_max_y: float = INF
 	var t_max_z: float = INF
@@ -809,29 +883,33 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 	if absf(dir.z) > 0.000001:
 		t_max_z = (next_z - pos.z) / dir.z
 
+	# 最大搜索参数 t — 体素格空间的距离限制
 	var max_t: float = max_distance / voxel_scale
+	# 安全上限：防止死循环（理论上 max_t*3 已足够遍历对角线方向）
 	var max_steps: int = max(1, ceili(max_t * 3.0))
 
-	# 起点就位于实体体素内部（极少见，但要兼容）
+	# 起点本身就在实体体素内部（极少见，但需兼容）
 	var initial_type: int = _sample_voxel_global(voxel)
 	if BlockRegistryScript.is_solid(initial_type):
 		return {
-			"hit": true,
-			"voxel": voxel,
-			"previous": voxel,
-			"normal": Vector3i.ZERO,
-			"type": initial_type,
+			“hit”: true,
+			“voxel”: voxel,
+			“previous”: voxel,
+			“normal”: Vector3i.ZERO,
+			“type”: initial_type,
 		}
 
+	# DDA主循环：每次迭代选 t_max 最小的轴，前进一格
 	for _i in range(max_steps):
 		var hit_normal: Vector3i = Vector3i.ZERO
 
+		# 三方向比较 → 选最先碰到边界的轴前进
 		if t_max_x < t_max_y and t_max_x < t_max_z:
-			if t_max_x > max_t:
+			if t_max_x > max_t:  # 超出最大距离 → 未命中
 				break
-			voxel.x += step_x
-			hit_normal = Vector3i(-step_x, 0, 0)
-			t_max_x += t_delta_x
+			voxel.x += step_x           # 前进一格
+			hit_normal = Vector3i(-step_x, 0, 0)  # 命中面法线（指向射线来源方向）
+			t_max_x += t_delta_x        # 更新x轴到下一个边界的t值
 		elif t_max_y < t_max_z:
 			if t_max_y > max_t:
 				break
@@ -845,18 +923,19 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 			hit_normal = Vector3i(0, 0, -step_z)
 			t_max_z += t_delta_z
 
+		# 检查当前体素是否实体方块
 		var vt: int = _sample_voxel_global(voxel)
 		if BlockRegistryScript.is_solid(vt):
-			# 放置方块的目标格子应当是“命中体素沿命中法线方向相邻的格子”（也就是射线进入该体素前所在的空气格子）
+			# previous = 射线进入该体素前所在的空气格子（用于放置方块定位）
 			return {
-				"hit": true,
-				"voxel": voxel,
-				"previous": voxel + hit_normal,
-				"normal": hit_normal,
-				"type": vt,
+				“hit”: true,
+				“voxel”: voxel,        # 被射线命中的实体体素
+				“previous”: voxel + hit_normal,  # 命中面法线方向的前一格（空气）
+				“normal”: hit_normal,   # 命中面的法线方向
+				“type”: vt,             # 被命中的方块类型
 			}
 
-	return {"hit": false}
+	return {“hit”: false}
 	# --- INDEPENDENT DESIGN END ---
 
 func _sign_int_from_float(v: float) -> int:
@@ -866,20 +945,31 @@ func _sign_int_from_float(v: float) -> int:
 		return -1
 	return 0
 
+## 确保纹理图集已就绪 — 核心初始化流程
+## 1) 收集所有方块纹理路径 → 2) 计算映射（路径→图集坐标） → 3) 将映射写入BlockData
+## 4) 加载/生成图集纹理 → 5) 计算图集行列数
 func _ensure_atlas_ready() -> void:
+	# 收集：扫描 block_registry 中所有已注册方块的纹理文件
 	var base_paths: Array[String] = _collect_atlas_base_paths()
+	# 计算映射：每个纹理路径 → 图集中的 (列, 行) 坐标
 	var mapping: Dictionary = _compute_atlas_mapping(base_paths)
+	# 将映射写入各 BlockData 资源的 tile_top/side/bottom 字段
 	BlockRegistryScript.apply_atlas_mapping(mapping)
 
 	if atlas_texture == null:
 		if ResourceLoader.exists(_PREBUILT_ATLAS_PNG_PATH):
+			# 已存在预构建图集 → 直接加载（导出版本走此路径）
 			atlas_texture = load(_PREBUILT_ATLAS_PNG_PATH)
 		elif OS.has_feature("editor"):
+			# 编辑器运行时 → 用Image API动态拼接图集 → 保存为PNG供导出使用
 			atlas_texture = _build_and_save_prebuilt_atlas_png(base_paths)
+			# 同时将tile坐标写回BlockData资源文件
 			_apply_mapping_and_save_blocks(mapping)
 		else:
+			# 导出版本缺少图集 → 报错（用户需先在编辑器中运行一次）
 			push_error("缺少预构建方块图集（%s）。请在编辑器里运行一次项目以生成图集 PNG，然后再导出。" % _PREBUILT_ATLAS_PNG_PATH)
 
+	# 根据纹理实际尺寸反推图集行列数
 	_tile_pixels = max(1, _tile_pixels)
 	if atlas_texture != null:
 		var w: int = atlas_texture.get_width()
@@ -972,23 +1062,29 @@ func _collect_atlas_base_paths() -> Array[String]:
 	out.sort()
 	return out
 
+## 破坏准星指向的体素方块（左键交互）
+## 流程：DDA射线 → 命中实体体素 → 设为空气 → 生成掉落物实体
 func break_voxel_at_ray(origin: Vector3, direction: Vector3) -> bool:
 	var result: Dictionary = raycast_voxel(origin, direction, max_interact_distance)
 	if not result.get("hit", false):
 		return false
 	var vt: int = result.get("type", VoxelTypes.VoxelType.AIR)
-	if vt == VoxelTypes.VoxelType.BEDROCK:
+	if vt == VoxelTypes.VoxelType.BEDROCK:  # 基岩不可破坏
 		return false
+	# 将命中体素设为空气
 	set_voxel_global(result["voxel"], VoxelTypes.VoxelType.AIR)
+	# 在体素中心位置生成掉落物（位置 = 体素坐标 + 0.5 居中）
 	_spawn_item_drop(vt, 1, (Vector3(result["voxel"]) + Vector3(0.5, 0.5, 0.5)) * voxel_scale)
 	return true
 
+## 在准星指向的空气格放置方块（右键交互）
+## 流程：DDA射线 → 取previous(空气格) → 验证仍为空气 → 写入方块
 func place_voxel_at_ray(origin: Vector3, direction: Vector3, voxel_type: int) -> bool:
 	var result: Dictionary = raycast_voxel(origin, direction, max_interact_distance)
 	if not result.get("hit", false):
 		return false
-	var target: Vector3i = result["previous"]
-	# 防止射线边界误差导致 previous 仍然是实体体素：只允许放在空气中
+	var target: Vector3i = result["previous"]  # 射线进入实体前的空气格子
+	# 防止极端情况：previous 位置被其他操作占用了
 	if BlockRegistryScript.is_solid(_sample_voxel_global(target)):
 		return false
 	set_voxel_global(target, voxel_type)

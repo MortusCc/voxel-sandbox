@@ -59,49 +59,54 @@ var _material: ShaderMaterial
 
 
 func _ready() -> void:
-	# 说明：
-	# - 掉落物有重力，会落到地面。
-	# - 渲染为“缩小的立方体”，与快捷栏 3D 预览一致的贴图/UV 规则。
-	# - 落地后做轻微上下悬浮抖动，并持续旋转（接近 MC 方块掉落表现）。
-	# - 玩家进入吸附范围后，掉落物会从原地飞向玩家，接近后触发拾取。
+	# 刷新视觉（构建缩小的立方体网格 + 复用体素Shader材质）
 	_refresh_visual()
 	if _mesh != null:
 		_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-	_base_mesh_y = _mesh.position.y if _mesh != null else 0.0
-	_attract_delay_left = max(0.0, attract_delay)
+	_base_mesh_y = _mesh.position.y if _mesh != null else 0.0  # 记录初始Y偏移
+	_attract_delay_left = max(0.0, attract_delay)  # 丢弃保护时间
+	# 初始随机水平速度 + 小上抛（模拟方块被敲掉后弹出的效果）
 	velocity = Vector3(randf() - 0.5, 1.8, randf() - 0.5) * 1.2
 
 
+## 物理帧 — 状态机：重力下落 → 落地悬浮旋转 → 被吸附飞向玩家 → 拾取消失
 func _physics_process(delta: float) -> void:
 	_time += delta
+	# 丢弃保护倒计时
 	if _attract_delay_left > 0.0:
 		_attract_delay_left = max(0.0, _attract_delay_left - delta)
 
+	# 状态1：有吸附目标 且 保护时间已过 → 飞向玩家
 	if _target != null and is_instance_valid(_target) and _attract_delay_left <= 0.0:
 		var target_pos: Vector3 = (_target as Node3D).global_position + Vector3.UP * attract_target_height if _target is Node3D else global_position
 		var to_target: Vector3 = target_pos - global_position
 		var d: float = to_target.length()
-		if d <= pickup_distance:
+		if d <= pickup_distance:  # 足够近 → 触发拾取
 			_try_pickup(_target)
 			return
 
+		# 吸附加速度：越远越快（d*10），但有上限 attract_speed
 		var dir: Vector3 = to_target / max(0.0001, d)
 		var desired_vel: Vector3 = dir * min(attract_speed, d * 10.0)
-		velocity = velocity.move_toward(desired_vel, attract_accel * delta)
+		velocity = velocity.move_toward(desired_vel, attract_accel * delta)  # 平滑加速
 		move_and_slide()
 	else:
-		velocity.y -= gravity * delta
+		# 状态2：无目标 → 重力下落 + 地面摩擦
+		velocity.y -= gravity * delta  # 重力加速度
 		if is_on_floor():
 			velocity.y = 0.0
+			# 水平摩擦减速至零
 			velocity.x = move_toward(velocity.x, 0.0, ground_friction * delta)
 			velocity.z = move_toward(velocity.z, 0.0, ground_friction * delta)
 		move_and_slide()
 
+	# 视觉更新：旋转 + 悬浮抖动（仅落地且未被吸附时悬浮）
 	if _mesh != null:
-		_mesh.rotation.y += deg_to_rad(spin_speed_deg) * delta
+		_mesh.rotation.y += deg_to_rad(spin_speed_deg) * delta  # Y轴持续旋转
 		var hovering: bool = is_on_floor() and (_target == null or not is_instance_valid(_target))
 		var y: float = _base_mesh_y
 		if hovering:
+			# 正弦波上下抖动：hover_height + amplitude * sin(time * speed)
 			y += hover_height + hover_amplitude * sin(_time * hover_speed)
 		_mesh.position.y = y
 

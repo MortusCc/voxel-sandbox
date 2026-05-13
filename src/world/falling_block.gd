@@ -86,6 +86,8 @@ func _build_material_from_world() -> ShaderMaterial:
 			_material.set_shader_parameter("sky_brightness", sky_brightness)
 	return _material
 
+## 落地处理 — 射线找支撑面 → 检查目标区域是否为空 → 逐格回填体素方块
+## 核心：整柱下落→落地→一次性逐格回填，保证数量不变（不丢块）
 func _try_settle() -> void:
 	var world: Node = _find_voxel_world()
 	if world == null:
@@ -93,57 +95,65 @@ func _try_settle() -> void:
 		return
 	var s: float = max(0.0001, voxel_scale)
 	var h: int = max(1, height_blocks)
-	var half_h: float = (h * 0.5) * s
+	var half_h: float = (h * 0.5) * s  # 半柱高（世界单位）
+
+	# 向下射线检测：从实体中心点向下探测，找支撑面Y
 	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
 	var from_pos: Vector3 = global_position
-	var to_pos: Vector3 = global_position + Vector3.DOWN * (half_h + s * 2.0)
+	var to_pos: Vector3 = global_position + Vector3.DOWN * (half_h + s * 2.0)  # 探测距离=半柱高+2格余量
 
 	var q: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.new()
 	q.from = from_pos
 	q.to = to_pos
-	q.collision_mask = 3
-	q.exclude = [self]
+	q.collision_mask = 3  # 地形(1) | 实体(2) = 3
+	q.exclude = [self]    # 排除自己
 
 	var hit: Dictionary = space.intersect_ray(q)
-	if hit.is_empty():
+	if hit.is_empty():  # 下方无碰撞体 → 掉出世界
 		queue_free()
 		return
 	var collider: Object = hit.get("collider", null)
+	# 不要在另一个下落实体上停住（防堆积穿透）
 	if collider != null and collider.has_meta("is_falling_block") and bool(collider.get_meta("is_falling_block")):
 		return
 
+	# 计算支撑面Y坐标 → 底部体素的Y坐标
 	var hit_pos: Vector3 = hit.get("position", global_position)
 	var eps: float = s * 0.001
-	var support_y: int = floori((hit_pos.y - eps) / s)
-	var vx: int = floori(global_position.x / s)
-	var vz: int = floori(global_position.z / s)
-	var bottom_y: int = support_y + 1
+	var support_y: int = floori((hit_pos.y - eps) / s)  # 支撑面所在的体素Y
+	var vx: int = floori(global_position.x / s)        # 柱的体素X
+	var vz: int = floori(global_position.z / s)        # 柱的体素Z
+	var bottom_y: int = support_y + 1                   # 沙柱底格应该放的Y
 	var target: Vector3i = Vector3i(vx, bottom_y, vz)
 
+	# 验证目标区域全为空（防止重叠放置）
 	if world.has_method("get_voxel_global"):
 		var tries: int = 0
-		while tries < 8:
+		while tries < 8:  # 最多向上尝试8格
 			var ok: bool = true
 			var yi: int = 0
 			while yi < h:
 				var v0: int = int(world.call("get_voxel_global", target + Vector3i(0, yi, 0)))
-				if v0 != 0:
+				if v0 != 0:  # 非空气 → 该位置被占用
 					ok = false
 					break
 				yi += 1
 			if ok:
 				break
-			target.y += 1
+			target.y += 1  # 上移一格再试
 			tries += 1
-		if tries >= 8:
+		if tries >= 8:  # 8次都失败 → 放弃
 			queue_free()
 			return
+
+	# 逐格回填方块（从底到顶）
 	if world.has_method("set_voxel_global"):
 		var yi2: int = 0
 		while yi2 < h:
 			world.call("set_voxel_global", target + Vector3i(0, yi2, 0), block_id)
 			yi2 += 1
-	queue_free()
+
+	queue_free()  # 落地完成 → 清理实体
 
 func _build_block_column_mesh(_block_id: int, block: Resource, height: int) -> ArrayMesh:
 	var vertices: PackedVector3Array = PackedVector3Array()

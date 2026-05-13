@@ -90,50 +90,65 @@ static func build_block_atlas(block_textures_dir: String) -> Dictionary:
 		"mapping": mapping,
 	}
 
+## 按指定路径列表构建纹理图集（核心算法）
+## 原理：用Image.blit_rect将多张小图逐块复制到一张大图的指定位置
+##
+## 图集布局：
+##   [第0行] base0.png | base1.png | base2.png | ... | baseN.png
+##   [第1行] overlay0  | overlay1  | overlay2  | ... | overlayN
+##
+## 返回：{texture, columns, rows, tile_pixels, mapping}
 static func build_block_atlas_from_paths(base_paths: Array[String]) -> Dictionary:
 	var paths: Array[String] = base_paths.duplicate()
-	paths.sort()
+	paths.sort()  # 排序保证跨运行一致性
 	if paths.is_empty():
 		return {}
 
+	# 读取第一张图，确定tile像素尺寸（假设所有贴图同尺寸）
 	var first_img: Image = _get_image(paths[0])
 	if first_img == null:
 		return {}
 
-	var tile_px: int = first_img.get_width()
+	var tile_px: int = first_img.get_width()  # 每个tile的像素大小（如16×16）
 	if tile_px <= 0:
 		return {}
 
+	# 图集 = (tile_px × N列) 宽 × (tile_px × 2行) 高
 	var cols: int = paths.size()
 	var rows: int = 2
 
+	# 创建空白大图（RGBA8 = 每像素4字节，支持透明通道）
 	var atlas: Image = Image.create(tile_px * cols, tile_px * rows, false, Image.FORMAT_RGBA8)
-	atlas.fill(Color(0.0, 0.0, 0.0, 0.0))
+	atlas.fill(Color(0.0, 0.0, 0.0, 0.0))  # 初始全透明黑色
 
-	var mapping: Dictionary = {}
+	var mapping: Dictionary = {}  # 纹理路径 → Vector2i(列, 行)
 
 	for i in range(cols):
 		var base_path: String = paths[i]
-		var img: Image = _get_image(base_path)
+		var img: Image = _get_image(base_path)  # 加载纹理为Image
 		if img == null:
 			continue
+		# 统一格式 → RGBA8 + 统一尺寸(防不同来源图尺寸不一致)
 		img = _normalize(img, tile_px, tile_px)
+		# blit_rect: 将img的(0,0,tile_px,tile_px)区域复制到atlas的(i*tile_px, 0)位置
 		atlas.blit_rect(img, Rect2i(0, 0, tile_px, tile_px), Vector2i(i * tile_px, 0))
-		mapping[base_path] = Vector2i(i, 0)
+		mapping[base_path] = Vector2i(i, 0)  # 记录：第0行第i列
 
+		# 检测是否有对应的覆盖层贴图（*_overlay.png）
 		var overlay_path: String = base_path.get_basename() + "_overlay.png"
 		var overlay_img: Image = _get_image(overlay_path)
 		if overlay_img != null:
 			overlay_img = _normalize(overlay_img, tile_px, tile_px)
+			# 覆盖层放在第1行（i * tile_px, tile_px）
 			atlas.blit_rect(overlay_img, Rect2i(0, 0, tile_px, tile_px), Vector2i(i * tile_px, tile_px))
-			mapping[overlay_path] = Vector2i(i, 1)
+			mapping[overlay_path] = Vector2i(i, 1)  # 记录：第1行第i列
 
 	return {
-		"texture": ImageTexture.create_from_image(atlas),
+		"texture": ImageTexture.create_from_image(atlas),  # Image → GPU纹理
 		"columns": cols,
 		"rows": rows,
 		"tile_pixels": tile_px,
-		"mapping": mapping,
+		"mapping": mapping,  # 后续通过BlockRegistry.apply_atlas_mapping写入BlockData
 	}
 
 static func build_block_atlas_image_from_paths(base_paths: Array[String]) -> Dictionary:

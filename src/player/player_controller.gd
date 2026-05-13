@@ -63,19 +63,25 @@ var _cached_world: Node
 var _item_magnet: Area3D
 
 func _ready() -> void:
+	# 确保WASD等输入映射在InputMap中注册（仅在缺失时补齐）
 	_ensure_input_actions()
+	# 捕获鼠标 → 隐藏光标 + 锁定在窗口中心（用于FPS视角旋转）
 	_mouse_captured = true
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+	# 初始化偏航角 = 角色当前朝向（Y轴旋转）
 	_yaw = rotation.y
+	# 缓存相机和世界的引用（避免每帧 get_node 查找）
 	_cached_camera = _resolve_camera()
 	_cached_world = _resolve_world()
 	if _cached_camera != null:
-		_pitch = _cached_camera.rotation.x
+		_pitch = _cached_camera.rotation.x  # 初始化俯仰角 = 相机当前X旋转
 	else:
 		push_error("PlayerController: 找不到 Camera3D，请检查 Player 的 camera_path 或节点结构。")
 	if _cached_world == null:
 		push_error("PlayerController: 找不到 VoxelWorld，请检查 Player 的 voxel_world_path 或节点结构。")
+	# 创建掉落物吸附范围（Area3D磁铁）
 	_ensure_item_magnet()
+	# 初始化9格快捷栏（给初始方块用于测试）
 	_init_hotbar()
 
 func _ensure_input_actions() -> void:
@@ -172,54 +178,63 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		_try_select_hotbar_by_wheel(event.button_index)
 
+## 物理帧更新 — 处理移动输入 + 重力 + 飞行/行走双模式
 func _physics_process(delta: float) -> void:
+	# 处理左右键方块交互（破坏/放置）
 	_handle_interaction_input()
-	var xform_basis: Basis = global_transform.basis
-	var move_input: Vector2 = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	# 说明：Input.get_vector 的第三/第四个参数语义是 up/down（上为 -1，下为 +1）。
-	# 在 3D 里，Basis.z 指向“后方”，Basis.-z 指向“前方”。
-	# 因此这里直接用 Basis.z * y：W(上,-1) => -z(前)，S(下,+1) => +z(后)。
+	var xform_basis: Basis = global_transform.basis  # 角色朝向的基向量
+	var move_input: Vector2 = Input.get_vector(“move_left”, “move_right”, “move_forward”, “move_back”)
+	# Input.get_vector 的第三/第四个参数语义是 up/down（上为-1，下为+1）
+	# 在3D里，Basis.z指向”后方”，Basis.-z指向”前方”
+	# W(上,-1) => -z(前)，S(下,+1) => +z(后)
 	var input_dir: Vector3 = (xform_basis.x * move_input.x) + (xform_basis.z * move_input.y)
 	if input_dir.length() > 0.0001:
 		input_dir = input_dir.normalized()
 
 	if _fly_mode:
+		# === 飞行模式 ===
 		var fly_h_speed: float = fly_speed
-		if Input.is_action_pressed("sprint"):
-			fly_h_speed *= sprint_multiplier
+		if Input.is_action_pressed(“sprint”):
+			fly_h_speed *= sprint_multiplier  # Shift加速飞行
 
 		velocity.x = input_dir.x * fly_h_speed
 		velocity.z = input_dir.z * fly_h_speed
 
+		# 飞行垂直：空格上升，Ctrl下降，都不按则悬停
 		var v: float = 0.0
-		if Input.is_action_pressed("jump"):
-			v += fly_vertical_speed
-		if Input.is_action_pressed("fly_down"):
-			v -= fly_vertical_speed
+		if Input.is_action_pressed(“jump”):
+			v += fly_vertical_speed   # 空格 → 上升
+		if Input.is_action_pressed(“fly_down”):
+			v -= fly_vertical_speed   # Ctrl → 下降
 		velocity.y = v
 
-		move_and_slide()
+		move_and_slide()  # Godot内置移动+碰撞（不应用重力）
 		_update_block_highlight(delta)
 		return
 
+	# === 行走模式（有重力） ===
+	# 落地检测（用于”落地时自动跳跃”逻辑）
 	var on_floor_before: bool = is_on_floor()
 	if on_floor_before and not _was_on_floor:
-		_jump_consumed_on_floor = false
+		_jump_consumed_on_floor = false  # 刚落地 → 允许再次跳跃
 	_was_on_floor = on_floor_before
 
+	# 水平移动速度
 	var speed: float = move_speed
-	if Input.is_action_pressed("sprint"):
-		speed *= sprint_multiplier
+	if Input.is_action_pressed(“sprint”):
+		speed *= sprint_multiplier  # Shift疾跑加速
 
 	velocity.x = input_dir.x * speed
 	velocity.z = input_dir.z * speed
 
+	# 重力 + 跳跃
 	if not on_floor_before:
-		velocity.y -= gravity * delta
+		velocity.y -= gravity * delta  # 空中持续加速下落
 	else:
+		# 在地面且按下空格 → 跳跃（按住空格期间只触发一次）
 		if (not _jump_consumed_on_floor) and _space_held:
 			velocity.y = jump_velocity
-			_jump_consumed_on_floor = true
+			_jump_consumed_on_floor = true  # 防止一帧内多次跳跃
 
 	move_and_slide()
 	_update_block_highlight(delta)
@@ -342,23 +357,27 @@ func _try_place_block() -> void:
 		if placed:
 			_consume_selected_one()
 
+## 空格按下 — 记录按下时间，用于双击检测和行走跳跃
 func _on_space_pressed() -> void:
-	_space_press_time_sec = Time.get_ticks_msec() / 1000.0
+	_space_press_time_sec = Time.get_ticks_msec() / 1000.0  # 记录按下时刻
 	_space_held = true
+	# 行走模式下落地时重置跳跃标记（允许按住空格自动跳）
 	if not _fly_mode and is_on_floor():
 		_jump_consumed_on_floor = false
 
+## 空格释放 — 双击检测：短按+短间隔 → 切换飞行/行走模式
 func _on_space_released() -> void:
 	var now_sec: float = Time.get_ticks_msec() / 1000.0
 	_space_held = false
-	var press_duration: float = now_sec - _space_press_time_sec
+	var press_duration: float = now_sec - _space_press_time_sec  # 本次按下持续时间
+	# 短按（≤250ms）且距离上次短按 ≤250ms → 双击 → 切换模式
 	if press_duration <= double_tap_window_seconds:
 		if now_sec - _last_space_tap_time_sec <= double_tap_window_seconds:
-			_fly_mode = not _fly_mode
-			velocity.y = 0.0
-			_last_space_tap_time_sec = -1000.0
+			_fly_mode = not _fly_mode  # 飞行↔行走切换
+			velocity.y = 0.0           # 切换时清零垂直速度
+			_last_space_tap_time_sec = -1000.0  # 重置，防止三连击被识别
 			return
-		_last_space_tap_time_sec = now_sec
+		_last_space_tap_time_sec = now_sec  # 记录第一次短按
 
 func _init_hotbar() -> void:
 	_hotbar_selected_index = clampi(_hotbar_selected_index, 0, 8)
@@ -436,19 +455,22 @@ func pickup_item(item_id: int, count: int) -> int:
 	# 返回：剩余未拾取数量；0 表示全部进入快捷栏。
 	return _add_to_hotbar(item_id, count)
 
+## 将物品添加到快捷栏 — 优先堆叠已有格子，再填入空格
+## 返回：未被拾取的数量（0=全部拾取，>0=背包满）
 func _add_to_hotbar(item_id: int, amount: int) -> int:
 	if amount <= 0:
 		return 0
-	if item_id == VoxelTypes.VoxelType.AIR:
+	if item_id == VoxelTypes.VoxelType.AIR:     # 空气不可拾取
 		return amount
-	if item_id == VoxelTypes.VoxelType.BEDROCK:
+	if item_id == VoxelTypes.VoxelType.BEDROCK:  # 基岩不可拾取
 		return amount
 	if _hotbar_item_ids.size() != 9 or _hotbar_counts.size() != 9:
 		return amount
 
 	var remain: int = amount
-	var max_stack: int = 64
+	var max_stack: int = 64  # 单格最大堆叠数
 
+	# 第一轮：优先合并到已有同种物品的格子（未满的格子）
 	for i in range(9):
 		if remain <= 0:
 			break
@@ -457,6 +479,7 @@ func _add_to_hotbar(item_id: int, amount: int) -> int:
 			_hotbar_counts[i] += can_add
 			remain -= can_add
 
+	# 第二轮：填入空格子
 	for i in range(9):
 		if remain <= 0:
 			break
@@ -466,6 +489,7 @@ func _add_to_hotbar(item_id: int, amount: int) -> int:
 			_hotbar_counts[i] = put
 			remain -= put
 
+	# 有变化时才刷新UI
 	if remain != amount:
 		_refresh_hotbar_ui()
 	return remain
@@ -512,27 +536,30 @@ func _try_drop_selected_one() -> void:
 		drop.set("attract_target_height", item_magnet_target_height)
 		drop.set("velocity", forward * 6.0 + Vector3.UP * 2.0)
 
+## 检测在目标位置放置方块是否会与玩家碰撞体相交
+## 目的：防止玩家把自己”封进方块里”导致卡死或穿透
+## 注意：允许”跳起来往脚下放方块搭高”——玩家跳起后占据空间上移，脚下格子不再相交
 func _would_place_block_intersect_player(target_voxel: Vector3i, world: Node) -> bool:
-	# 规则：不允许把方块放进玩家当前占据的空间（避免把自己“封进方块里”或导致掉落/穿透）。
-	# 允许“跳起来往脚下放方块搭高”：玩家跳起后占据空间上移，脚下目标格子不再相交，因此可放置。
 	var voxel_scale_value: float = 1.0
 	if world != null:
-		voxel_scale_value = world.get("voxel_scale")
+		voxel_scale_value = world.get(“voxel_scale”)  # 获取体素缩放因子
 
+	# 创建与方块等大的盒子形状（略小0.98防止边界误判）
 	var box: BoxShape3D = BoxShape3D.new()
 	box.size = Vector3.ONE * voxel_scale_value * 0.98
 
+	# 物理形状查询：在目标体素位置放置盒子，检测是否与玩家碰撞体重叠
 	var query: PhysicsShapeQueryParameters3D = PhysicsShapeQueryParameters3D.new()
 	query.shape = box
 	query.transform = Transform3D(Basis.IDENTITY, (Vector3(target_voxel) + Vector3(0.5, 0.5, 0.5)) * voxel_scale_value)
-	query.collision_mask = 2
+	query.collision_mask = 2      # 碰撞层2 = 玩家/实体层
 	query.collide_with_areas = false
-	query.collide_with_bodies = true
+	query.collide_with_bodies = true  # 只检测实体碰撞体
 
 	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
-	var hits: Array[Dictionary] = space.intersect_shape(query, 8)
+	var hits: Array[Dictionary] = space.intersect_shape(query, 8)  # 最多返回8个结果
 	for h in hits:
-		var collider: Object = h.get("collider", null)
-		if collider == self:
+		var collider: Object = h.get(“collider”, null)
+		if collider == self:  # 与玩家自身相交 → 不允许放置
 			return true
 	return false
