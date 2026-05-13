@@ -1,6 +1,29 @@
 extends CharacterBody3D
 class_name PlayerController
 
+## ============================================================
+## 玩家控制器 (PlayerController) — 第一人称/飞行双模式
+## ============================================================
+## 职责：
+##   1. 鼠标视角控制（捕获/释放，水平偏航+垂直俯仰）
+##   2. 第一人称移动（WASD行走+空格跳跃+Shift疾跑+重力）
+##   3. 飞行模式（双击空格切换，空格上升/Ctrl下降，无重力）
+##   4. 方块交互（左键破坏/右键放置，含放置碰撞检测）
+##   5. 快捷栏管理（9格物品栏，数字键/滚轮切换，堆叠拾取，Q丢弃）
+##   6. 掉落物吸附（Area3D磁铁范围，触发后掉落物飞向玩家）
+##   7. 方块高亮更新（定时向VoxelWorld查询射线命中体素）
+##
+## 输入映射：
+##   - move_forward/back/left/right: W/A/S/D
+##   - jump: Space（地面跳跃/飞行上升）
+##   - sprint: Shift（行走加速/飞行加速）
+##   - fly_down: Ctrl（仅飞行模式下降）
+##   - break_block: 鼠标左键
+##   - place_block: 鼠标右键
+##   - drop_item: Q
+##   - ESC: 切换鼠标捕获
+## ============================================================
+
 @export var move_speed: float = 6.0
 @export var sprint_multiplier: float = 1.8
 @export var jump_velocity: float = 6.0

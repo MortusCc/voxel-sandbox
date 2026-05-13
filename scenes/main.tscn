@@ -24,6 +24,7 @@ environment = SubResource("Environment_1")
 
 [node name="SkyController" type="Node3D" parent="." unique_id=80366592]
 script = ExtResource("5")
+time_of_day = 0.822
 
 [node name="VoxelWorld" type="Node3D" parent="." unique_id=2099845755]
 script = ExtResource("1")

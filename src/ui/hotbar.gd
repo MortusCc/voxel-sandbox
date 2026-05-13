@@ -1,5 +1,30 @@
 extends Control
 
+## ============================================================
+## 快捷栏UI (Hotbar) — 9格物品栏的视觉呈现
+## ============================================================
+## 职责：
+##   1. 显示9格物品槽（ColorRect背景 + TextureRect图标 + Label数量）
+##   2. 选中槽高亮（黄色边框 StyleBoxFlat）
+##   3. 物品图标获取：优先3D预览纹理（BlockPreviewRenderer），回退静态图标
+##   4. 接收 PlayerController 推送的物品数据（set_stacks / set_items）
+##   5. 数量显示：>1 时在右下角显示白色数字
+##
+## 节点结构（期望）：
+##   Hotbar (Control)
+##   └─ Slots (HBoxContainer)
+##       ├─ Slot0 (ColorRect)
+##       │   ├─ Icon (TextureRect)
+##       │   ├─ Border (Panel)
+##       │   └─ Count (Label)
+##       ├─ Slot1 ...
+##       └─ Slot8 ...
+##
+## 数据流：PlayerController._refresh_hotbar_ui()
+##   → Hotbar.set_stacks([{item_id, count}, ...], selected_index)
+##   → 遍历Slots子节点 → 设置图标/边框/数量
+## ============================================================
+
 const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 
 @onready var _slots: HBoxContainer = $Slots

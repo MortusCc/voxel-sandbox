@@ -1,6 +1,28 @@
 extends MeshInstance3D
 class_name VoxelChunk
 
+## ============================================================
+## 体素区块 (VoxelChunk) — 世界的基本渲染单元
+## ============================================================
+## 职责：
+##   1. 存储一个 16×16×N 柱状区域的体素数据（按列字典存储）
+##   2. 执行贪心面剔除 + 程序化网格生成（ArrayMesh）
+##   3. 执行 BFS 天光传播缓存
+##   4. 生成物理碰撞体（Trimesh ConcavePolygonShape3D）
+##
+## 数据模型：
+##   - _columns[chunk_size × chunk_size]: 每个 (x,z) 列存一个 Dictionary[int, int]
+##     key=y坐标, value=体素类型(VoxelType枚举)
+##   - _col_top_y[] / _col_bottom_y[]: 每列的最高/最低体素Y（加速范围查询）
+##   - _col_top_occluder_y[]: 每列最高遮挡体素Y（用于天光直接光照判断）
+##   - _skylight_cache[]: BFS天光传播结果（16×16×16, 0~15），仅对缓存有效的Chunk可用
+##
+## 关键算法：
+##   - rebuild_mesh(): 面剔除 + 顶点/UV/颜色/索引构建
+##   - _try_add_face(): 单个面的可见性检查 + UV计算 + 顶点推入
+##   - _build_skylight_cache(): BFS从列顶向六方向扩散天光衰减
+## ============================================================
+
 const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 
 @export var chunk_size: int = 16
@@ -499,6 +521,10 @@ func _is_light_passable(voxel_type: int) -> bool:
 		return true
 	return not BlockRegistryScript.occludes_faces(voxel_type)
 
+## BFS天光传播算法（3阶段）：
+## 阶段1 — 从列顶(y=15)向下扫描，透光方块设光值15，入队。
+## 阶段2 — 边界格子查询邻居Chunk光值，减2衰减后注入本Chunk（保证跨区块连续渐变）。
+## 阶段3 — BFS出队扩散，向六方向传播：next_lv=lv-2。衰减到0或遇遮挡方块停止。
 func _build_skylight_cache(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	_skylight_cache.clear()
 	_skylight_cache.resize(chunk_size * chunk_size * chunk_size)

@@ -1,6 +1,27 @@
 extends RefCounted
 class_name AtlasBuilder
 
+## ============================================================
+## 纹理图集构建器 (AtlasBuilder) — 运行时拼接多张方块纹理为一张大图
+## ============================================================
+## 职责：
+##   1. 扫描纹理目录，收集所有基础贴图
+##   2. 逐张读取 Image → 统一格式(RGBA8) → 统一尺寸 → blit_rect 拼接到图集
+##   3. 同时检测并拼接覆盖层贴图（_overlay.png）到第二行
+##   4. 生成 ImageTexture 供 Shader 采样
+##   5. 返回 tile→图集坐标的映射表（mapping）
+##
+## 图集布局：
+##   第0行：基础纹理（grass_block_top, grass_block_side, dirt, stone, ...）
+##   第1行：覆盖层纹理（grass_block_side_overlay, ...）
+##   列数 = 基础贴图数量, 行数 = 2
+##
+## 三个变体函数：
+##   - build_block_atlas(dir): 编辑器目录扫描 + 导出后生成的完整流程
+##   - build_block_atlas_from_paths(paths): 按指定路径列表构建
+##   - build_block_atlas_image_from_paths(paths): 同上但只返回 Image（用于保存PNG）
+## ============================================================
+
 static func build_block_atlas(block_textures_dir: String) -> Dictionary:
 	var base_paths: Array[String] = []
 

@@ -1,6 +1,22 @@
 extends RefCounted
 class_name BlockRegistry
 
+## ============================================================
+## 方块注册表 (BlockRegistry) — 方块类型→BlockData资源的映射中心
+## ============================================================
+## 职责：
+##   1. 从 res://resources/blocks/ 目录扫描 .tres 文件加载 BlockData
+##   2. 维护 id → Resource 的字典映射（_blocks）
+##   3. 提供 is_solid() / occludes_faces() / icon_for() 等便捷查询
+##   4. 管理纹理图集映射（_atlas_mapping）：纹理路径→图集tile坐标
+##   5. 导出兼容：编辑器枚举失败时回退到固定清单 _known_block_paths
+##
+## 加载流程：
+##   _ensure_loaded() → DirAccess扫描目录 → 逐个load() .tres
+##   → 若结果异常（只有AIR）→ _load_known_blocks() 兜底
+##   → 若有缓存的 _atlas_mapping → _apply_atlas_mapping_internal()
+## ============================================================
+
 static var _blocks: Dictionary = {}
 static var _atlas_mapping: Dictionary = {}
 static var _known_block_paths: PackedStringArray = PackedStringArray([

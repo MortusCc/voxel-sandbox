@@ -1,6 +1,30 @@
 extends Node3D
 class_name VoxelWorld
 
+## ============================================================
+## 体素世界管理器 (VoxelWorld) — 整个体素沙盒的中枢控制器
+## ============================================================
+## 职责：
+##   1. 区块生命周期管理（创建/加载/卸载/流式更新）
+##   2. 地形生成（噪声高度图 + 群系分配 + 树生成）
+##   3. 运行时纹理图集构建与导出兼容
+##   4. DDA射线拾取（方块交互的核心算法）
+##   5. 方块破坏/放置 + 掉落物生成 + 沙子下落调度
+##   6. 方块准星高亮（ImmediateMesh线框）
+##   7. ShaderMaterial全局参数的维护（图集、colormap、天空亮度）
+##
+## 区块坐标体系：
+##   - 世界体素坐标: Vector3i(gx, gy, gz)
+##   - 区块坐标: Vector3i(cx, 0, cz)  (Y始终为0，不分块)
+##   - 体素→区块: cx = floor(gx / chunk_size), cz = floor(gz / chunk_size)
+##   - 局部坐标: lx = gx - cx * chunk_size, ly = gy, lz = gz - cz * chunk_size
+##
+## 流式加载机制：
+##   - 以玩家所在区块为中心，chunk_load_radius 半径内加载
+##   - chunk_unload_radius 半径外卸载
+##   - 每 chunk_stream_interval 秒处理一次，每tick限制操作次数
+## ============================================================
+
 const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 const ItemDropScene: PackedScene = preload("res://scenes/item_drop.tscn")
 const FallingBlockScene: PackedScene = preload("res://scenes/falling_block.tscn")

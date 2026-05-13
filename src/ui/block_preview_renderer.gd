@@ -1,6 +1,24 @@
 extends Node
 class_name BlockPreviewRenderer
 
+## ============================================================
+## 方块3D预览渲染器 (BlockPreviewRenderer) — SubViewport离屏渲染图标
+## ============================================================
+## 职责：
+##   1. 创建专用SubViewport + 正交相机 + 方向光 + 环境光
+##   2. 为每个方块类型构造一个6面立方体网格（复用体素Shader材质）
+##   3. 单帧渲染到SubViewport → 抓取Image → 生成ImageTexture缓存
+##   4. 异步队列渲染（request_preview → 队列 → _process_queue_deferred）
+##   5. 发出 preview_ready 信号通知Hotbar刷新
+##
+## 设计动机：
+##   - 避免为每个方块预渲染PNG图标（8种方块=8张图，但新增方块需重新制图）
+##   - SubViewport复用：所有方块共用一个Viewport依次渲染，不产生多个Viewport开销
+##   - 异步队列：不阻塞主循环，渲染完成通过信号通知UI刷新
+##
+## 相机：正交投影 + 对角方向位置 (2.2, 2.0, 2.2) → 同时看到上/前/侧三面
+## ============================================================
+
 signal preview_ready(block_id: int, texture: Texture2D)
 
 const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")

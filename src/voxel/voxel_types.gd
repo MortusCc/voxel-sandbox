@@ -1,6 +1,20 @@
 extends RefCounted
 class_name VoxelTypes
 
+## ============================================================
+## 体素类型枚举定义 (VoxelTypes) — 全局常量和面方向枚举
+## ============================================================
+## 内容：
+##   - VoxelType 枚举：所有体素类型(AIR=0, GRASS=1, DIRT=2, ...)
+##   - Face 枚举：六个面方向(POS_X=0, NEG_X=1, ...)
+##   - 辅助静态函数：is_solid(), default_place_type()
+##
+## 注意：此文件中的 get_face_tile() 为早期硬编码版本，
+## 当前已被 BlockData.tile_for_face() 替代。
+## 加载实际图集映射后，BlockRegistry.apply_atlas_mapping() 会将正确的
+## tile坐标写入各BlockData资源的 tile_top/side/bottom 字段。
+## ============================================================
+
 enum VoxelType {
 	AIR = 0,
 	GRASS = 1,

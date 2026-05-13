@@ -1,6 +1,26 @@
 extends Node3D
 class_name SkyController
 
+## ============================================================
+## 天空与昼夜控制器 (SkyController) — 环境渲染总管
+## ============================================================
+## 职责：
+##   1. 昼夜循环时间推进（time_of_day 0~1, 可调速度）
+##   2. ProceduralSkyMaterial 天空颜色昼夜平滑过渡
+##   3. 太阳/月亮天体显示（Sprite3D + Billboard + 加法混合）
+##   4. 太阳/月亮方向光 + 阴影（DirectionalLight3D 强度/颜色/阴影昼夜过渡）
+##   5. 环境光昼夜过渡（WorldEnvironment ambient 颜色/能量）
+##   6. 多层云系统（PlaneMesh + clouds.gdshader, 随相机移动, 纹理飘动）
+##   7. 体素世界天空亮度同步（set_sky_brightness → ShaderMaterial）
+##   8. 月相循环（8张月相贴图每天轮换，正午切换防止穿帮）
+##
+## 天体轨道模型：
+##   - _solar_phase() = (time_of_day - 0.25) * TAU
+##   - _get_sun_height() = sin(solar_phase)
+##   - sun_height > 0 → 白天, sun_height < 0 → 夜晚
+##   - orbit_yaw_deg 绕Y轴倾斜轨道（默认45°）
+## ============================================================
+
 ## 昼夜循环总时长（秒）。例如 600 表示 10 分钟一天
 @export var day_length_seconds: float = 600.0
 ## 时间流速倍率（1 为正常；2 为加速两倍）

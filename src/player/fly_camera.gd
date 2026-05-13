@@ -1,6 +1,14 @@
 extends Camera3D
 class_name FlyCamera
 
+## ============================================================
+## 自由飞行相机 (FlyCamera) — 旧版调试用飞行相机（已被 PlayerController 取代）
+## ============================================================
+## 说明：此脚本为开发早期的自由飞行相机，支持WASD+空格/Ctrl飞行移动和鼠标视角。
+## 当前版本的主玩家控制器为 PlayerController (CharacterBody3D, 支持碰撞/重力/飞行双模式)。
+## 此文件保留用于可能的回退对比测试。
+## ============================================================
+
 @export var move_speed: float = 8.0
 @export var sprint_multiplier: float = 2.5
 @export var mouse_sensitivity: float = 0.0025
