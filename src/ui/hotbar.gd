@@ -46,7 +46,7 @@ func _ready() -> void:
 
 func _ensure_initialized() -> void:
 	# 说明：PlayerController 的 _ready 可能比 HUD/Hotbar 更早执行，
-	# 因此需要支持“Hotbar 尚未 ready 时也能安全 set_items”的延迟初始化。
+	# 因此需要支持"Hotbar 尚未 ready 时也能安全 set_items"的延迟初始化。
 	if _slots == null:
 		_slots = get_node_or_null("Slots") as HBoxContainer
 
@@ -71,7 +71,7 @@ func _ensure_initialized() -> void:
 
 func set_items(items: Array[int], selected_index: int) -> void:
 	# 作用：由 PlayerController 推送快捷栏内容与选中索引；Hotbar 负责把内容渲染到 UI 上。
-	# 好处：UI 更新逻辑集中在一个脚本里，PlayerController 不再依赖 Slot 节点细节，后续扩展“数量/堆叠”也更方便。
+	# 好处：UI 更新逻辑集中在一个脚本里，PlayerController 不再依赖 Slot 节点细节，后续扩展"数量/堆叠"也更方便。
 	_ensure_initialized()
 	if _slots == null:
 		return
@@ -165,7 +165,7 @@ func _set_slot_count_text(slot: Control, count: int) -> void:
 
 
 func _get_item_icon_texture(item_id: int) -> Texture2D:
-	# 说明：优先使用“实时 3D 渲染的方块预览图”；若尚未渲染完成，则回退到原有 icon_texture，保证 UI 不空白。
+	# 说明：优先使用"实时 3D 渲染的方块预览图"；若尚未渲染完成，则回退到原有 icon_texture，保证 UI 不空白。
 	var r: Node = _get_preview_renderer()
 	if r != null and r.has_method("request_preview"):
 		var t: Texture2D = r.call("request_preview", item_id)

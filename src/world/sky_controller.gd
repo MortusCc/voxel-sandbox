@@ -47,9 +47,9 @@ class_name SkyController
 ## 月亮月相贴图列表（8 张）。为空时会按默认路径加载
 @export var moon_phase_textures: Array[Texture2D] = []
 
-## 太阳是否使用“加法混合”（可隐藏贴图的黑色背景，效果更接近 MC）
+## 太阳是否使用"加法混合"（可隐藏贴图的黑色背景，效果更接近 MC）
 @export var sun_additive_blend: bool = true
-## 月亮是否使用“加法混合”（可避免月落/月出时贴图黑底穿帮，更接近 MC）
+## 月亮是否使用"加法混合"（可避免月落/月出时贴图黑底穿帮，更接近 MC）
 @export var moon_additive_blend: bool = true
 
 ## 天体距离（需小于相机 far，当前主相机 far=200）
@@ -69,18 +69,18 @@ class_name SkyController
 @export var world_environment_path: NodePath = NodePath("../WorldEnvironment")
 ## 主相机节点路径（为空则自动查找当前 viewport 的 Camera3D）
 @export var camera_path: NodePath
-## VoxelWorld 节点路径（用于把“天空亮度（渲染用）”同步给体素材质）
+## VoxelWorld 节点路径（用于把"天空亮度（渲染用）"同步给体素材质）
 @export var voxel_world_path: NodePath = NodePath("../VoxelWorld")
 
-## 是否显示云层（最简实现：平面云，效果接近 MC 的“流畅”云）
+## 是否显示云层（最简实现：平面云，效果接近 MC 的"流畅"云）
 @export var clouds_enabled: bool = true
 ## 云纹理（默认加载 res://resources/textures/environment/clouds.png）
 @export var clouds_texture: Texture2D
 ## 云层高度（MC 1.17+ 约为 Y=192~196，这里取中间值 194）
 @export var clouds_height: float = 194.0
-## 云层在水平方向的“纹理缩放”（世界单位/一张纹理）。数值越大，云越“大块”
+## 云层在水平方向的"纹理缩放"（世界单位/一张纹理）。数值越大，云越"大块"
 @export var clouds_tile_world_size: float = 4096.0
-## 云整体不透明度（0~1）。数值越大云越“实”，也越容易遮住太阳
+## 云整体不透明度（0~1）。数值越大云越"实"，也越容易遮住太阳
 @export_range(0.0, 1.0, 0.01) var clouds_opacity: float = 0.35
 ## 云层厚度（世界单位）。0 表示单层平面云
 @export_range(0.0, 32.0, 0.1) var clouds_thickness: float = 5.0
@@ -88,16 +88,16 @@ class_name SkyController
 @export_range(1, 12, 1) var clouds_layers: int = 5
 ## 云层移动速度（世界单位/秒）。MC 云会向西飘浮，这里默认向 -X
 @export var clouds_speed_world: Vector2 = Vector2(-12.0, 0.0)
-## 云层可见的最大半径（世界单位）。越大越接近“渲染到地平线”，但更耗一些填充率
+## 云层可见的最大半径（世界单位）。越大越接近"渲染到地平线"，但更耗一些填充率
 @export var clouds_radius: float = 900.0
 ## 云颜色（白天）
 @export var clouds_day_color: Color = Color(1.0, 1.0, 1.0, 1.0)
 ## 云颜色（夜晚，略偏暗蓝）
 @export var clouds_night_color: Color = Color(0.25, 0.30, 0.45, 1.0)
-## 夜晚云透明度倍率（0~1）。数值越小夜晚越“淡”
+## 夜晚云透明度倍率（0~1）。数值越小夜晚越"淡"
 @export_range(0.0, 1.0, 0.01) var clouds_night_alpha_mul: float = 0.55
 
-## 是否由 SkyController 自动创建“太阳方向光 + 月亮方向光”（用于照明与投影）
+## 是否由 SkyController 自动创建"太阳方向光 + 月亮方向光"（用于照明与投影）
 @export var use_celestial_lights: bool = true
 ## 黄昏/黎明的光照颜色（让日出日落更暖，接近 MC 观感）
 @export var twilight_light_color: Color = Color(1.0, 0.70, 0.40, 1.0)
@@ -132,14 +132,14 @@ var _sky_mat: ProceduralSkyMaterial
 @export var ambient_day_color: Color = Color(0.9, 0.95, 1.0, 1.0)
 ## 夜晚环境光颜色（更暗、更冷）
 @export var ambient_night_color: Color = Color(0.12, 0.16, 0.25, 1.0)
-## 环境光能量变化的平滑速度（避免进出洞口“啪”一下跳变）
+## 环境光能量变化的平滑速度（避免进出洞口"啪"一下跳变）
 @export_range(0.0, 40.0, 0.1) var ambient_smooth_speed: float = 10.0
 
 ## 是否启用方向光阴影（投射体素地形/玩家的影子）
 @export var shadows_enabled: bool = true
 ## 阴影最大距离（越大阴影覆盖越远，但更耗性能）
 @export var shadow_max_distance: float = 120.0
-## 阴影偏移（防止阴影痤疮；过大会“飘”）
+## 阴影偏移（防止阴影痤疮；过大会"飘"）
 @export var shadow_bias: float = 0.015
 ## 法线偏移（进一步减少痤疮；过大会导致阴影断开）
 @export var shadow_normal_bias: float = 0.6
@@ -172,9 +172,9 @@ func _process(delta: float) -> void:
 		var step: float = (delta * time_scale) / day_length_seconds
 		var next_time: float = fposmod(time_of_day + step, 1.0)  # 0~1 循环
 		if _last_time_of_day >= 0.0:
-			# 以”正午（0.5）穿越点”作为”新的一天”计数点：
+			# 以"正午（0.5）穿越点"作为"新的一天"计数点：
 			# - 午夜时月亮通常可见且接近正上空，若在此刻换月相会明显穿帮
-			# - 正午时月亮不可见，把月相推进放到这里可以从根因上避免”抬头看月亮突然变相”
+			# - 正午时月亮不可见，把月相推进放到这里可以从根因上避免"抬头看月亮突然变相"
 			if _last_time_of_day < 0.5 and (next_time >= 0.5 or next_time < _last_time_of_day):
 				_day_count += 1  # 进入新的一天 → 月相 +1
 		time_of_day = next_time

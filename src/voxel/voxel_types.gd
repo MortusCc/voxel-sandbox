@@ -46,7 +46,7 @@ static func get_face_tile(voxel_type: int, face: int) -> Vector2i:
 	# --- INDEPENDENT DESIGN START ---
 	# 纹理图集索引规则：
 	# - 返回 (tile_x, tile_y)，代表该面的纹理位于图集的哪一个格子（从左上到右下）
-	# - 你可以按课程要求把草方块的“顶面/侧面/底面”映射到不同格子以展示 UV 分配算法
+	# - 你可以按课程要求把草方块的"顶面/侧面/底面"映射到不同格子以展示 UV 分配算法
 	match voxel_type:
 		VoxelType.GRASS:
 			match face:

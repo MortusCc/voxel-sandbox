@@ -5,7 +5,7 @@ class_name BlockData
 @export var id: int = 0
 ## 在 UI / 调试输出中展示的名称
 @export var display_name: String = ""
-## 是否占据一个体素格（为 false 时会被当作“空气/不存在”处理）
+## 是否占据一个体素格（为 false 时会被当作"空气/不存在"处理）
 @export var solid: bool = true
 ## 是否遮挡相邻体素的面（用于面剔除）。树叶/玻璃这类应设为 false
 @export var occludes_faces: bool = true

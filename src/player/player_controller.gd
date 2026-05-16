@@ -85,7 +85,7 @@ func _ready() -> void:
 	_init_hotbar()
 
 func _ensure_input_actions() -> void:
-	# 作用：统一把“移动/疾跑/飞行下落”等按键放到 InputMap 里，后续可在 Project Settings 里自由改键。
+	# 作用：统一把"移动/疾跑/飞行下落"等按键放到 InputMap 里，后续可在 Project Settings 里自由改键。
 	# 说明：只在缺失时补齐，不会覆盖你已经在项目里配置过的输入映射。
 	_ensure_key_action("move_forward", KEY_W)
 	_ensure_key_action("move_back", KEY_S)
@@ -109,7 +109,7 @@ func _ensure_key_action(action_name: StringName, keycode: Key) -> void:
 	InputMap.action_add_event(action_name, e)
 
 func _ensure_item_magnet() -> void:
-	# 作用：统一由玩家控制“吸附范围”。任何掉落物进入该范围后，开始飞向玩家并拾取。
+	# 作用：统一由玩家控制"吸附范围"。任何掉落物进入该范围后，开始飞向玩家并拾取。
 	if _item_magnet != null and is_instance_valid(_item_magnet):
 		_update_item_magnet_radius()
 		return
@@ -183,9 +183,9 @@ func _physics_process(delta: float) -> void:
 	# 处理左右键方块交互（破坏/放置）
 	_handle_interaction_input()
 	var xform_basis: Basis = global_transform.basis  # 角色朝向的基向量
-	var move_input: Vector2 = Input.get_vector(“move_left”, “move_right”, “move_forward”, “move_back”)
+	var move_input: Vector2 = Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	# Input.get_vector 的第三/第四个参数语义是 up/down（上为-1，下为+1）
-	# 在3D里，Basis.z指向”后方”，Basis.-z指向”前方”
+	# 在3D里，Basis.z指向"后方"，Basis.-z指向"前方"
 	# W(上,-1) => -z(前)，S(下,+1) => +z(后)
 	var input_dir: Vector3 = (xform_basis.x * move_input.x) + (xform_basis.z * move_input.y)
 	if input_dir.length() > 0.0001:
@@ -194,7 +194,7 @@ func _physics_process(delta: float) -> void:
 	if _fly_mode:
 		# === 飞行模式 ===
 		var fly_h_speed: float = fly_speed
-		if Input.is_action_pressed(“sprint”):
+		if Input.is_action_pressed("sprint"):
 			fly_h_speed *= sprint_multiplier  # Shift加速飞行
 
 		velocity.x = input_dir.x * fly_h_speed
@@ -202,9 +202,9 @@ func _physics_process(delta: float) -> void:
 
 		# 飞行垂直：空格上升，Ctrl下降，都不按则悬停
 		var v: float = 0.0
-		if Input.is_action_pressed(“jump”):
+		if Input.is_action_pressed("jump"):
 			v += fly_vertical_speed   # 空格 → 上升
-		if Input.is_action_pressed(“fly_down”):
+		if Input.is_action_pressed("fly_down"):
 			v -= fly_vertical_speed   # Ctrl → 下降
 		velocity.y = v
 
@@ -213,7 +213,7 @@ func _physics_process(delta: float) -> void:
 		return
 
 	# === 行走模式（有重力） ===
-	# 落地检测（用于”落地时自动跳跃”逻辑）
+	# 落地检测（用于"落地时自动跳跃"逻辑）
 	var on_floor_before: bool = is_on_floor()
 	if on_floor_before and not _was_on_floor:
 		_jump_consumed_on_floor = false  # 刚落地 → 允许再次跳跃
@@ -221,7 +221,7 @@ func _physics_process(delta: float) -> void:
 
 	# 水平移动速度
 	var speed: float = move_speed
-	if Input.is_action_pressed(“sprint”):
+	if Input.is_action_pressed("sprint"):
 		speed *= sprint_multiplier  # Shift疾跑加速
 
 	velocity.x = input_dir.x * speed
@@ -537,12 +537,12 @@ func _try_drop_selected_one() -> void:
 		drop.set("velocity", forward * 6.0 + Vector3.UP * 2.0)
 
 ## 检测在目标位置放置方块是否会与玩家碰撞体相交
-## 目的：防止玩家把自己”封进方块里”导致卡死或穿透
-## 注意：允许”跳起来往脚下放方块搭高”——玩家跳起后占据空间上移，脚下格子不再相交
+## 目的：防止玩家把自己"封进方块里"导致卡死或穿透
+## 注意：允许"跳起来往脚下放方块搭高"——玩家跳起后占据空间上移，脚下格子不再相交
 func _would_place_block_intersect_player(target_voxel: Vector3i, world: Node) -> bool:
 	var voxel_scale_value: float = 1.0
 	if world != null:
-		voxel_scale_value = world.get(“voxel_scale”)  # 获取体素缩放因子
+		voxel_scale_value = world.get("voxel_scale")  # 获取体素缩放因子
 
 	# 创建与方块等大的盒子形状（略小0.98防止边界误判）
 	var box: BoxShape3D = BoxShape3D.new()
@@ -559,7 +559,7 @@ func _would_place_block_intersect_player(target_voxel: Vector3i, world: Node) ->
 	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
 	var hits: Array[Dictionary] = space.intersect_shape(query, 8)  # 最多返回8个结果
 	for h in hits:
-		var collider: Object = h.get(“collider”, null)
+		var collider: Object = h.get("collider", null)
 		if collider == self:  # 与玩家自身相交 → 不允许放置
 			return true
 	return false

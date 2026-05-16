@@ -52,7 +52,7 @@ var chunk_coord: Vector3i = Vector3i.ZERO
 const _MIN_I32: int = -2147483648
 
 # 说明：本项目的区块在 X/Z 方向按 16×16 切分，Y 方向不切分（同一区块内 Y 可任意高度）。
-# 体素数据采用“按列存储”：每个 (x,z) 保存一个 y->voxel_type 的字典，避免为无限高度分配大数组。
+# 体素数据采用"按列存储"：每个 (x,z) 保存一个 y->voxel_type 的字典，避免为无限高度分配大数组。
 var _columns: Array[Dictionary] = []
 var _col_top_y: PackedInt32Array = PackedInt32Array()
 var _col_bottom_y: PackedInt32Array = PackedInt32Array()
@@ -242,7 +242,7 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	var base_vertex_index: int = 0
 	var s: float = voxel_scale
 
-	# 说明：为减少重复查询与重复计算，这里对“按方块类型不变”的数据做缓存：
+	# 说明：为减少重复查询与重复计算，这里对"按方块类型不变"的数据做缓存：
 	# - BlockData 资源引用
 	# - 每个面的 tile_uv_rect
 	# - tint_mode/use_side_overlay/alpha_cutoff
@@ -259,7 +259,7 @@ func rebuild_mesh(sample_neighbor: Callable, sample_skylight: Callable) -> void:
 	# - 如果相邻为空气（或越界外部空气），说明该面暴露，需要生成该面 2 个三角形。
 	# - 如果相邻是实体体素，说明该面被遮挡，不生成。
 	#
-	# 这里“剔除”的核心不是 GPU 的背面剔除，而是“根本不生成内部面”，减少顶点数与三角形数。
+	# 这里"剔除"的核心不是 GPU 的背面剔除，而是"根本不生成内部面"，减少顶点数与三角形数。
 	if _max_y < _min_y:
 		mesh = null
 		_update_collision_from_mesh()
@@ -686,7 +686,7 @@ func _try_add_face(
 
 	var start: int = base_vertex_index
 
-	# 说明：把“是否树叶(0/1)”与“群系ID(0/1/2)”打包到 UV2.x，确保同一个方块 6 个面颜色一致。
+	# 说明：把"是否树叶(0/1)"与"群系ID(0/1/2)"打包到 UV2.x，确保同一个方块 6 个面颜色一致。
 	# 解码规则在 voxel_lit.gdshader 中：
 	# - leaf_mask = step(0.5, UV2.x)
 	# - biome_id = floor((UV2.x - leaf_mask*0.5) * 8.0)
@@ -777,7 +777,7 @@ func _tile_uvs(tile: Vector2i) -> Array[Vector2]:
 	var du: float = 1.0 / cols
 	var dv: float = 1.0 / rows
 
-	# 采用“像素级 padding”减少图集采样出血（需要你保证图集格子大小一致）
+	# 采用"像素级 padding"减少图集采样出血（需要你保证图集格子大小一致）
 	var pad_u: float = (uv_padding_pixels / cols) * 0.001
 	var pad_v: float = (uv_padding_pixels / rows) * 0.001
 
@@ -813,7 +813,7 @@ func _tile_uv_rect(tile: Vector2i) -> Rect2:
 
 func _face_uv_local(face: int, corner: Vector3) -> Vector2:
 	# 约定：uv_local 的 (0,0) 为 tile 左上角，(1,1) 为 tile 右下角
-	# 侧面：v 与世界 y 对齐，确保 grass_block_side 的“草皮部分”永远朝上
+	# 侧面：v 与世界 y 对齐，确保 grass_block_side 的"草皮部分"永远朝上
 	match face:
 		VoxelTypes.Face.POS_X:
 			return Vector2(1.0 - corner.z, 1.0 - corner.y)

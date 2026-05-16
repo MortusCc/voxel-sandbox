@@ -65,7 +65,7 @@ var _material: ShaderMaterial
 
 
 func _ready() -> void:
-	# 目的：建立一个“专用 SubViewport 渲染器”，把方块用固定相机/固定光照渲染成 Texture2D，供 UI 贴图使用。
+	# 目的：建立一个"专用 SubViewport 渲染器"，把方块用固定相机/固定光照渲染成 Texture2D，供 UI 贴图使用。
 	# 特点：
 	# - 不需要预渲染 PNG 图标（完全实时 3D 渲染 + 缓存结果）
 	# - 只用一个 SubViewport 复用渲染，避免为每个格子创建一个 Viewport 导致开销爆炸
@@ -145,11 +145,11 @@ func _try_bind_from_voxel_world() -> void:
 		return
 	_atlas_texture = t
 
-	# 说明：本项目环境里避免使用 int(...) 作为“类型转换构造器”，统一走字符串转换。
+	# 说明：本项目环境里避免使用 int(...) 作为"类型转换构造器"，统一走字符串转换。
 	_atlas_columns = max(1, str(world.get("atlas_columns")).to_int())
 	_atlas_rows = max(1, str(world.get("atlas_rows")).to_int())
 
-	# 说明：tile_pixels 是“图集每格像素尺寸”；VoxelWorld 里是内部变量，这里用图集尺寸反推。
+	# 说明：tile_pixels 是"图集每格像素尺寸"；VoxelWorld 里是内部变量，这里用图集尺寸反推。
 	var atlas_w: int = _atlas_texture.get_width()
 	_tile_pixels = max(1, floori(atlas_w / (_atlas_columns * 1.0)))
 
@@ -355,7 +355,7 @@ func _add_face(
 
 
 func _face_uv_local(face: int, corner: Vector3) -> Vector2:
-	# 说明：保持侧面贴图“草皮朝上”的约定，与体素世界网格生成逻辑一致。
+	# 说明：保持侧面贴图"草皮朝上"的约定，与体素世界网格生成逻辑一致。
 	# 约定：uv_local 的 (0,0) 为 tile 左上角，(1,1) 为 tile 右下角
 	match face:
 		VoxelTypes.Face.POS_X:

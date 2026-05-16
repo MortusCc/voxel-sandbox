@@ -40,6 +40,7 @@
 - 2026-05-04：洞穴天光传播系统：Chunk 重建前执行 BFS 天光传播（从列顶直射光向下，衰减步长 2），跨区块通过采样邻居 Chunk 的缓存光值实现连续渐变。
 - 2026-05-04：世界流式加载优化：以玩家为中心按半径加载/卸载区块，碰撞仅对近区启用，网格重建按队列节流。
 - 2026-05-04：导出纹理方案统一：编辑器运行生成 block_atlas.png → 写入项目目录 → 导出版 load("res://resources/textures/block_atlas.png") 由 Godot 导入管线提供纹理；同时将 tile 映射烘焙写入各 .tres 文件保证导出后正确采样。
+- 2026-05-14：更新文档与代码一致：修正 Texture Atlas 图集尺寸描述（4×2→动态N×2/当前10列）；修正光照模型描述（Blinn-Phong→Godot PBR+自定义天光）；更新附录文件行数。
 
 ---
 
@@ -85,15 +86,19 @@
 - 若邻居为空气或透明方块，则该方向的面可见，需要生成 2 个三角形（4 个顶点 + 6 个索引）。
 - 若邻居为实体，则该面被遮挡，不生成。
 
-伪码（简化）：
+伪码：
 ```
-for voxel in chunk:
-  if voxel is AIR: continue
-  for face in 6 faces:
-    neighbor = voxel + face.normal_offset
-    if sample(neighbor) is AIR:
-      append_face_vertices_normals_uvs_indices(face, voxel)
+for 每个体素 in 区块:
+  if 体素是空气: 跳过
+  for 6个面方向:
+    邻居 = 体素坐标 + 面方向偏移
+    邻居类型 = 查询邻居所在体素
+    if 邻居遮挡面: 跳过                           // 邻居是实体方块 → 面被遮挡，不生成
+    if 邻居类型是玻璃 且 当前体素也是玻璃: 跳过    // 同材质透明方块相邻 → 不生成内部面
+    生成该面的4个顶点 + 6个索引                   // 暴露面 → 推入网格数组
 ```
+
+说明：实体方块（石头、泥土、草方块等）设置 `occludes_faces = true`，会遮挡相邻面；树叶和玻璃设置 `occludes_faces = false`，相邻面仍然生成（可看到内部）。但两块玻璃相邻时只保留外表面、不生成内部面——这是网格生成阶段额外判断的规则，避免玻璃墙内部出现多余的边框线。
 
 数据通道（Vertex Attributes）：
 - POSITION：每个顶点的 3D 坐标
@@ -114,32 +119,43 @@ for voxel in chunk:
 - 为四个顶点按约定顺序赋值 UV。
 
 本项目图集组织方式（当前实现）：
-- 4 列 × 2 行（4×2）
-- 第 0 行：基础纹理（grass_top / grass_side / dirt / stone）
-- 第 1 行：覆盖层纹理（仅 grass_side_overlay，其余为空）
+- N 列 × 2 行（动态列数，取决于实际贴图数量；当前 10 列）
+- 第 0 行：所有方块的基础纹理（按文件名排序，grass_block_top / grass_block_side / dirt / stone / oak_log / oak_log_top / oak_leaves / bedrock / glass / sand）
+- 第 1 行：对应位置的覆盖层纹理（仅 grass_block_side_overlay 有效，其余为空）
 
 #### C. 射线拾取：3D DDA（Digital Differential Analyzer）栅格遍历
-目标：实现玩家准星拾取方块（删除/放置），并且不依赖引擎内置的逐方块碰撞体堆叠。
+目标：玩家准星（相机前方射线）命中哪个方块，用于鼠标左键破坏/右键放置。不依赖在场景中放置成千上万个碰撞体做逐方块射线检测。
 
-核心思想：
-- 将射线看作在 3D 栅格（体素网格）中前进。
-- 维护 `t_max_x/y/z`（到下一个 x/y/z 网格边界的射线参数距离）与 `t_delta_x/y/z`（跨过一个格子的增量）。
-- 每次选择最小的 `t_max_*` 方向跨越一个体素单元，实现 O(步数) 的遍历，找到第一个命中实体体素。
+核心思想：不按固定步长（如 `t += 0.01`）推进射线——步长太小则慢，太大则可能跳过薄墙。而是精确计算射线依次穿过哪些体素格边界，每次跨过最近的一个边界进入下一格。
 
-伪码（简化）：
+关键变量（射线 `P(t) = origin + t × direction`）：
+- `t_max_x/y/z`：沿各轴走到**下一个格边界**所需的 t 值
+- `t_delta_x/y/z`：沿各轴**跨过一整格**需要的 t 增量（`= 1.0 / |direction|`）
+
+伪码：
 ```
-voxel = floor(origin)
-step = sign(direction)
-compute t_max, t_delta
-while t < max_distance:
-  if voxel is solid: hit
-  advance along axis with min(t_max)
+voxel = floor(origin)                     // 射线起点所在体素格
+step  = sign(direction)                   // 各轴行进方向：+1 / -1
+t_max = (next_boundary - pos) / direction  // 到各轴下一格边界的 t
+t_delta = abs(1.0 / direction)            // 跨一格需要的 t 增量
+
+while 累计步数 < 最大步数:
+  if t_max.x 最小:   voxel.x += step.x;  t_max.x += t_delta.x   // 跨过 x 边界
+  elif t_max.y 最小: voxel.y += step.y;  t_max.y += t_delta.y   // 跨过 y 边界
+  else:             voxel.z += step.z;  t_max.z += t_delta.z   // 跨过 z 边界
+  if voxel 是实体方块: 命中，返回 voxel 和命中面法线
+未命中
 ```
 
-#### D. 自定义着色器：Blinn-Phong 光照 + 草地群系染色（Biome Grass Tint）
-1) Blinn-Phong（基础光照）
-- 漫反射：`diffuse = albedo * max(dot(N, L), 0)`
-- 镜面反射（Blinn）：`spec = pow(max(dot(N, normalize(L+V)), 0), shininess)`
+复杂度：O(射线穿过的格子数)，对 6 格交互距离通常仅十几次迭代，且保证不跳过任何格子。
+
+关键边界处理：当射线起点恰好落在体素格边界（坐标 ≈ 整数），需根据行进方向修正初始体素的归属，避免正向和背向命中结果差一格。
+
+#### D. 自定义着色器：PBR 光照 + 草地群系染色（Biome Grass Tint）
+1) 基础光照（Godot 内置 PBR + 自定义天光叠加）
+- 使用 Godot 引擎的 `diffuse_lambert` 漫反射 + roughness/specular 参数控制镜面反射
+- 不使用传统 Blinn-Phong 公式，而是在引擎 PBR 通道基础上叠加自定义天光计算（`sky_brightness` × 顶点 COLOR.b 天光值）
+- 各面粗糙度/镜面强度通过顶点属性传入，不同方块类型可配置不同材质参数
 
 2) 草地群系染色（加分项）
 目标：复现 Minecraft 草方块“顶面随群系变化”的效果，并让侧面草皮与顶面颜色一致。
@@ -190,7 +206,7 @@ while t < max_distance:
 - 顶点/索引缓冲的手动构建（ArrayMesh）
 - 面剔除（不生成内部面）作为几何层面的优化
 - Texture Atlas 与 UV 变换（tile→UV 区间映射）
-- 法线方向与光照模型（Blinn-Phong）
+- 法线方向与光照模型（引擎 PBR 通道 + 自定义天光叠加）
 - Shader 中使用额外顶点属性（COLOR 作为掩码通道）驱动片元逻辑
 - DDA 栅格遍历（空间离散化与光线行进）
 
@@ -199,7 +215,7 @@ while t < max_distance:
 ## 三、程序源代码和使用说明（20分）
 
 ### 1）程序源代码（10分）
-项目采用”模块化脚本 + 场景入口”的组织方式，共 13 个 GDScript 文件 + 2 个 GDShader 文件：
+项目采用”模块化脚本 + 场景入口”的组织方式，共 13 个核心 GDScript 文件 + 2 个 GDShader 文件：
 
 **核心体素系统（src/voxel/）**
 - `voxel_types.gd` — 体素类型枚举（AIR/GRASS/DIRT/...）与面方向定义
@@ -244,13 +260,13 @@ while t < max_distance:
  AtlasBuilder ──► block_atlas.png ──► ShaderMaterial (voxel_lit.gdshader)
       │                                            │
       ▼ tile映射                                    │
- BlockRegistry ──► BlockData (.tres)                │
+ BlockRegistry ──► BlockData (.tres)               │
       │                                            │
       ▼ 方块属性查询                                 ▼
  VoxelWorld ◄────────────────────── VoxelChunk (网格+碰撞)
       │         sample_neighbor/          │
       │         sample_skylight           │
-      │                                  ▼
+      │                                   ▼
       ├── DDA射线 ◄── PlayerController ──► Camera3D
       │       │           │
       │   hit_voxel    WASD/Space/Click
@@ -380,7 +396,7 @@ ALPHA_SCISSOR_THRESHOLD = alpha_cutoff;
 
 ### 2）程序运行结果（10分）
 （请在此处插入以下截图）
-- 图 5：初始地形与光照效果截图 —— 展示随机生成的山丘地形，可见多种群系（平原绿草/森林深草/干旱黄草/沙漠沙子）的交界过渡；方向光阴影投射在地形上，天空盒与云层可见，Blinn-Phong 光照模型使各面随法线明暗变化。
+- 图 5：初始地形与光照效果截图 —— 展示随机生成的山丘地形，可见多种群系（平原绿草/森林深草/干旱黄草/沙漠沙子）的交界过渡；方向光阴影投射在地形上，天空盒与云层可见，PBR 光照 + 自定义天光使各面随法线明暗变化。
 - 图 6：草地方块顶面与侧面草皮颜色一致截图 —— 展示草方块顶面与侧面草皮覆盖层的群系染色效果一致（同为平原绿或干旱黄），侧面下半部分为泥土纹理，过渡自然。
 - 图 7：方块删除/放置截图 —— 展示玩家准星对准方块后出现白色线框高亮；左键破坏后方块消失并掉落 3D 旋转小方块；右键放置后在目标空气格生成新方块。
 - 图 8：昼夜天空与云层截图 —— 展示白天太阳贴图（billboard + 加法混合）与夜晚月亮（月相贴图）的视觉效果；云层在昼夜有不同的颜色与透明度表现。

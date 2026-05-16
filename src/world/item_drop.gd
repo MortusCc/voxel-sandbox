@@ -29,7 +29,7 @@ const BlockRegistryScript := preload("res://src/voxel/block_registry.gd")
 ## 落地后的水平摩擦（越大越快停下来）
 @export var ground_friction: float = 10.0
 
-## 吸附时的加速度（越大越“嗖”）
+## 吸附时的加速度（越大越"嗖"）
 @export var attract_accel: float = 35.0
 ## 吸附时的目标速度上限
 @export var attract_speed: float = 12.0
@@ -127,7 +127,7 @@ func set_attract_delay(seconds: float) -> void:
 
 
 func start_attract(target: Node) -> void:
-	# 由玩家的“吸附范围”触发，掉落物开始飞向玩家。
+	# 由玩家的"吸附范围"触发，掉落物开始飞向玩家。
 	if target == null:
 		return
 	if not target.has_method("pickup_item"):
@@ -136,7 +136,7 @@ func start_attract(target: Node) -> void:
 
 
 func _try_pickup(body: Node) -> void:
-	# 规则：拾取逻辑归玩家管理（是否满背包、剩余多少），掉落物只负责“飞向玩家并请求拾取”。
+	# 规则：拾取逻辑归玩家管理（是否满背包、剩余多少），掉落物只负责"飞向玩家并请求拾取"。
 	if body == null or not is_instance_valid(body):
 		_target = null
 		return
@@ -167,7 +167,7 @@ func _build_material_from_world() -> ShaderMaterial:
 		if rows > 0.0:
 			_material.set_shader_parameter("atlas_rows", rows)
 
-	# 掉落物属于“世界表现”，保留群系变化（与地形一致）
+	# 掉落物属于"世界表现"，保留群系变化（与地形一致）
 	_material.set_shader_parameter("biome_variation_strength", 0.15)
 	_material.set_shader_parameter("leaves_tint", Vector3(0.25, 0.70, 0.25))
 	return _material

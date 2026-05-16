@@ -496,7 +496,7 @@ func _place_trees_for_chunk(chunk: VoxelChunk, heightmap: PackedInt32Array) -> v
 		return
 	# 权重规则：森林(褐)概率0.55，干旱(黄)概率0.22，平原(绿)不生成树
 	#
-	# 为了保证最小间距并且跨区块也尽量稳定，使用”格子候选点 + 概率筛选”：
+	# 为了保证最小间距并且跨区块也尽量稳定，使用"格子候选点 + 概率筛选"：
 	# - 把世界 XZ 划分为固定大小的 cell（8格），每个 cell 只产生一个候选树点（随机偏移）
 	# - 候选点再按群系权重进行概率筛选
 	# - 通过本区块内的 chosen 列表做曼哈顿距离最小间距剔除
@@ -666,7 +666,7 @@ func _sample_voxel_global(global_voxel: Vector3i) -> int:
 	return chunk.get_voxel_local(local.x, local.y, local.z)
 
 func get_voxel_global(global_voxel: Vector3i) -> int:
-	# 说明：对外提供的体素查询接口（用于天空系统判断“是否能看到天空”等逻辑）。
+	# 说明：对外提供的体素查询接口（用于天空系统判断"是否能看到天空"等逻辑）。
 	return _sample_voxel_global(global_voxel)
 
 func _sample_skylight_direct_global(global_voxel: Vector3i) -> int:
@@ -708,7 +708,7 @@ func _set_voxel_global_internal(global_voxel: Vector3i, voxel_type: int, schedul
 	var local: Vector3i = global_voxel - chunk_coord * chunk_size
 	chunk.set_voxel_local(local.x, local.y, local.z, voxel_type)
 
-	# 只重建“必需的”区块网格：自身 + 边界邻居（如果修改发生在边界）
+	# 只重建"必需的"区块网格：自身 + 边界邻居（如果修改发生在边界）
 	_mark_chunk_dirty(chunk_coord)
 	if local.x == 0:
 		_mark_chunk_dirty(chunk_coord + Vector3i(-1, 0, 0))
@@ -833,7 +833,7 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 	# --- INDEPENDENT DESIGN START ---
 	var dir: Vector3 = direction.normalized()
 	if dir.length() <= 0.00001:
-		return {“hit”: false}
+		return {"hit": false}
 
 	# 将世界坐标转换到体素格坐标空间（除以 voxel_scale）
 	var pos: Vector3 = origin / voxel_scale
@@ -845,8 +845,8 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 	var step_z: int = _sign_int_from_float(dir.z)
 
 	# 边界修正：当射线起点恰好落在体素边界（pos分量≈整数）时，
-	# 若沿负方向行进，floor() 会将起点归属到”前方”体素，导致转头后命中错一格。
-	# 解决：负方向 + 恰好边界 → 减去1，让起点归属到”后方”体素
+	# 若沿负方向行进，floor() 会将起点归属到"前方"体素，导致转头后命中错一格。
+	# 解决：负方向 + 恰好边界 → 减去1，让起点归属到"后方"体素
 	var eps: float = 0.000001
 	if absf(pos.x - floorf(pos.x)) < eps and step_x < 0:
 		voxel.x -= 1
@@ -892,11 +892,11 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 	var initial_type: int = _sample_voxel_global(voxel)
 	if BlockRegistryScript.is_solid(initial_type):
 		return {
-			“hit”: true,
-			“voxel”: voxel,
-			“previous”: voxel,
-			“normal”: Vector3i.ZERO,
-			“type”: initial_type,
+			"hit": true,
+			"voxel": voxel,
+			"previous": voxel,
+			"normal": Vector3i.ZERO,
+			"type": initial_type,
 		}
 
 	# DDA主循环：每次迭代选 t_max 最小的轴，前进一格
@@ -928,14 +928,14 @@ func raycast_voxel(origin: Vector3, direction: Vector3, max_distance: float) -> 
 		if BlockRegistryScript.is_solid(vt):
 			# previous = 射线进入该体素前所在的空气格子（用于放置方块定位）
 			return {
-				“hit”: true,
-				“voxel”: voxel,        # 被射线命中的实体体素
-				“previous”: voxel + hit_normal,  # 命中面法线方向的前一格（空气）
-				“normal”: hit_normal,   # 命中面的法线方向
-				“type”: vt,             # 被命中的方块类型
+				"hit": true,
+				"voxel": voxel,        # 被射线命中的实体体素
+				"previous": voxel + hit_normal,  # 命中面法线方向的前一格（空气）
+				"normal": hit_normal,   # 命中面的法线方向
+				"type": vt,             # 被命中的方块类型
 			}
 
-	return {“hit”: false}
+	return {"hit": false}
 	# --- INDEPENDENT DESIGN END ---
 
 func _sign_int_from_float(v: float) -> int:
@@ -1094,7 +1094,7 @@ func spawn_item_drop(item_id: int, count: int, world_pos: Vector3) -> Node:
 	return _spawn_item_drop(item_id, count, world_pos)
 
 func _spawn_item_drop(item_id: int, count: int, world_pos: Vector3) -> Node:
-	# 说明：只对“实体方块”生成掉落（空气不掉落）。透明/液体等后续可在 BlockData 扩展规则。
+	# 说明：只对"实体方块"生成掉落（空气不掉落）。透明/液体等后续可在 BlockData 扩展规则。
 	if not BlockRegistryScript.is_solid(item_id):
 		return null
 	if ItemDropScene == null:
