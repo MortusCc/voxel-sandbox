@@ -11,11 +11,11 @@
 ## 截图展示
 
 <p align="center">
-  <img src="assets/wps240.jpg" width="49%" alt="游戏截图 1"/>
-  <img src="assets/wps1.jpg" width="49%" alt="游戏截图 2"/>
+  <img src="assets/screenshot-1.jpg" width="49%" alt="游戏截图 1"/>
+  <img src="assets/screenshot-2.jpg" width="49%" alt="游戏截图 2"/>
   <br/>
-  <img src="assets/wps52.jpg" width="49%" alt="游戏截图 3"/>
-  <img src="assets/wps194.jpg" width="49%" alt="游戏截图 4"/>
+  <img src="assets/screenshot-3.jpg" width="49%" alt="游戏截图 3"/>
+  <img src="assets/screenshot-4.jpg" width="49%" alt="游戏截图 4"/>
 </p>
 
 ---
