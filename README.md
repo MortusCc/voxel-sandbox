@@ -8,8 +8,15 @@
 
 一个使用 **GDScript + GDShader** 手写的类 Minecraft 体素沙盒原型：支持地形生成、区块流式加载、方块破坏/放置、物品掉落与拾取、快捷栏、昼夜循环与云层，所有渲染核心（网格构建、面剔除、纹理图集、光照着色器）均为底层手动实现，不依赖任何第三方体素插件。
 
-<!-- 在此处插入游戏截图（GIF / PNG），例如：
-![screenshot](screenshots/demo.png) -->
+## 截图展示
+
+<p align="center">
+  <img src="assets/wps240.jpg" width="49%" alt="游戏截图 1"/>
+  <img src="assets/wps1.jpg" width="49%" alt="游戏截图 2"/>
+  <br/>
+  <img src="assets/wps52.jpg" width="49%" alt="游戏截图 3"/>
+  <img src="assets/wps194.jpg" width="49%" alt="游戏截图 4"/>
+</p>
 
 ---
 
